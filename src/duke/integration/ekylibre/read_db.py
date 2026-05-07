@@ -11,15 +11,19 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-# NOTE on schema assumptions:
-# Ekylibre's Rails STI model stores `LandParcel`, generic `Product` instances and
-# `Activity` rows. The queries below assume:
-#   - `products(id, name, type, variant_id, population_count, dead_at, updated_at)`
-#   - `interventions(id, procedure_name, nature, started_at, stopped_at, state)`
-#   - `intervention_targets(id, intervention_id, product_id, reference_name)`
-#   - `activities(id, name)`
-# Column names should be confirmed on a real Ekylibre dev instance and may need
-# adjustments before production use (tracked in ARCHITECTURE.md §10).
+# Schema notes (validated against Ekylibre 5.x dev instance, iteration 5):
+#   - `products(id, name, type, variant_id, dead_at, updated_at, ...)` — STI table.
+#     Land parcels are rows with `type = 'LandParcel'`. There is no
+#     `population_count` column; current stock comes from `product_populations`.
+#   - `product_populations(product_id, started_at, value)` — append-only history
+#     of population values. Stock for a variant = SUM(latest value per product).
+#   - `interventions(id, procedure_name, nature, state, started_at, stopped_at, ...)`.
+#     `state` is enumerized (in_progress / done / validated / rejected); the
+#     filter is loosened in dev where most rows live in `in_progress`.
+#   - `intervention_parameters` is a polymorphic STI table (column `type`):
+#     'InterventionTarget', 'InterventionInput', 'InterventionDoer',
+#     'InterventionTool'. `product_id` points at the targeted/used product.
+#   - `activities(id, name, ...)`.
 
 _SCHEMA_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
@@ -89,13 +93,22 @@ class ScopedReader:
 
     async def stock_for_variant(self, variant_id: int) -> dict[str, Any] | None:
         row = await self._conn.fetchrow(
-            "SELECT COALESCE(SUM(p.population_count), 0)::float AS total, "
-            "MAX(p.updated_at) AS last_update "
-            "FROM products p "
-            "WHERE p.variant_id = $1 AND p.dead_at IS NULL",
+            """
+            WITH latest AS (
+              SELECT DISTINCT ON (pp.product_id)
+                pp.product_id, pp.value, pp.started_at
+              FROM product_populations pp
+              JOIN products p ON p.id = pp.product_id
+              WHERE p.variant_id = $1 AND p.dead_at IS NULL
+              ORDER BY pp.product_id, pp.started_at DESC
+            )
+            SELECT COALESCE(SUM(value), 0)::float AS total,
+                   MAX(started_at) AS last_update
+            FROM latest
+            """,
             variant_id,
         )
-        if row is None:
+        if row is None or row["last_update"] is None:
             return None
         return {
             "variant_id": variant_id,
@@ -110,10 +123,9 @@ class ScopedReader:
         limit: int = 200,
     ) -> list[dict[str, Any]]:
         rows = await self._conn.fetch(
-            "SELECT id, procedure_name, started_at, stopped_at "
+            "SELECT id, procedure_name, state, started_at, stopped_at "
             "FROM interventions "
-            "WHERE state IN ('done', 'validated') "
-            "AND started_at >= $1 AND started_at < $2 "
+            "WHERE started_at >= $1 AND started_at < $2 "
             "ORDER BY started_at DESC LIMIT $3",
             start,
             end,
@@ -124,9 +136,11 @@ class ScopedReader:
     async def land_parcels_for_intervention(self, intervention_id: int) -> list[dict[str, Any]]:
         rows = await self._conn.fetch(
             "SELECT p.id, p.name "
-            "FROM intervention_targets t "
-            "JOIN products p ON p.id = t.product_id "
-            "WHERE t.intervention_id = $1 AND p.type = 'LandParcel'",
+            "FROM intervention_parameters ip "
+            "JOIN products p ON p.id = ip.product_id "
+            "WHERE ip.intervention_id = $1 "
+            "AND ip.type = 'InterventionTarget' "
+            "AND p.type = 'LandParcel'",
             intervention_id,
         )
         return [dict(r) for r in rows]
