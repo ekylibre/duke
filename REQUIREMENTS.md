@@ -1,6 +1,8 @@
 # Duke — Spécification des besoins
 
-> Document de cadrage produit par `/sc:brainstorm` le 2026-05-07. Sert d'entrée à `/sc:design` pour la conception d'architecture.
+> Document de cadrage produit par `/sc:brainstorm` le 2026-05-07. Sert d'entrée à `/sc:design` (voir `ARCHITECTURE.md`).
+>
+> **Statut MVP (mai 2026)** : périmètre P0 livré (saisie d'intervention + Q&A lecture seule) à travers les itérations 1 à 6. Voir `ARCHITECTURE.md §11` pour les livrables par itération et `README.md` pour le bootstrap. Les questions ouvertes du §8 ont été tranchées et leurs résolutions sont reflétées dans `ARCHITECTURE.md`. Ce document reste le contrat fonctionnel — il n'est pas mis à jour en place mais fait foi pour la définition du MVP.
 
 ## 1. Vision
 

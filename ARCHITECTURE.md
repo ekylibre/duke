@@ -651,24 +651,32 @@ Cas explicites en CI :
 
 | # | Dépendance | Côté | Statut |
 |---|---|---|---|
-| D1 | Endpoint `GET /api/v2/users/me` (Q8) | Ekylibre | À ajouter — bloquant MVP |
-| D2 | Compte Postgres `duke_reader` + GRANT USAGE schémas tenants + lexicon (Q4) | Ekylibre / DBA | À provisionner — bloquant MVP |
-| D3 | Confirmation convention de nommage des schémas Apartment | Ekylibre | À documenter — bloquant MVP |
-| D4 | Réseau Docker partagé `ekylibre_default` (Q5) | Infra | À configurer — bloquant MVP |
-| D5 | Mécanisme de transmission du token Ekylibre vers le client JS Duke (cookie session, header, ou injection serveur) | Ekylibre / Frontend | À spécifier — bloquant MVP |
-| D6 | Clés API Claude et Mistral (Q1) | Anthropic / Mistral | À obtenir — bloquant MVP |
+| D1 | Endpoint `GET /api/v2/users/me` (Q8) | Ekylibre | ✅ Mergé sur `5.0-beta` (branche `duke/api-v2-users-me`) |
+| D2 | Compte Postgres `duke_reader` + GRANT USAGE schémas tenants + lexicon (Q4) | Ekylibre / DBA | ✅ Mergé (`db/setup/duke_reader.sql` + `lib/tasks/duke_reader.rake` ; `rake duke_reader:verify` confirme zéro write privilege) |
+| D3 | Confirmation convention de nommage des schémas Apartment | Ekylibre | ✅ Validé empiriquement : schéma = tenant_label (`closeriedesterres` → schema `closeriedesterres`) |
+| D4 | Réseau Docker partagé `ekylibre` | Infra | ✅ Réseau `ekylibre` joignable par `duke-api` (résolution `db` → Postgres Ekylibre, `app` → Rails Ekylibre) |
+| D5 | Mécanisme de transmission du token Ekylibre vers le client JS Duke | Ekylibre / Frontend | ✅ Endpoint `GET /backend/duke/config` (Backend::DukeWidgetController#show) renvoie `{ws_url, token, tenant, locale, user}` à la demande, jamais inline dans le HTML |
+| D6 | Clés API Claude et Mistral (Q1) | Anthropic / Mistral | ⏳ Ops / secret management |
+| D7 | `ELEVATOR=header` dans l'env Ekylibre dev/prod | Ekylibre / Infra | ⏳ Requis pour qu'Apartment switche le tenant via header `X-Tenant` (au lieu de subdomain) lors des appels Duke→Ekylibre |
 
 ---
 
-## 11. Étape suivante
+## 11. Itérations livrées
 
-→ `/sc:implement` pour scaffolder le projet :
-1. `pyproject.toml`, structure de dossiers, Dockerfile, healthcheck FastAPI, Alembic.
-2. Couche transport WS + schémas Pydantic des messages.
-3. `EkylibreApiClient` (auth + écriture) + tests d'intégration mockés.
-4. `EkylibreReadDb` + test d'isolation multi-tenant (testcontainers).
-5. `LexiconRepository` + warm cache au démarrage.
-6. Pipeline spaCy minimale + `LLMRouter` avec impls Claude + Mistral.
-7. `InterventionRecorder` use case bout-en-bout sur US-1.
-8. `ConversationStore` Postgres + premières migrations Alembic.
-9. Job de rétention/anonymisation.
+| # | Thème | Livrable principal |
+|---|---|---|
+| 1 | Foundations | FastAPI + WS transport, Alembic, `EkylibreReadDb.with_tenant`, structlog, Prometheus |
+| 2 | NLU + intervention | spaCy pipeline, `LLMRouter` (Claude+Mistral), `InterventionRecorder` bout-en-bout sur US-1 |
+| 3 | Q&A streaming | `QueryAnswerer` (qa_stock + qa_history), `ConversationOrchestrator`, golden corpus + accuracy gate |
+| 4 | Durcissement | `ConversationRepository`, retention RGPD, rate limiting per-session |
+| 5 | E2E réel | `EkylibreReadDb` aligné sur le vrai schéma, `duke_reader` provisionné, suite e2e opt-in (`RUN_EKYLIBRE_E2E=1`) |
+| 6 | Frontend | Widget JS dans Ekylibre (`app/javascript/duke/`), partial HAML, `Backend::DukeWidgetController#show` |
+
+**Couverture tests** : 104 tests par défaut (unit + integration testcontainers) + 6 e2e opt-in contre Ekylibre tournant.
+
+## 12. Pistes pour la suite
+
+- **Voix** : bouton micro + Web Speech API (Phase 2 acté en itération 6) ; STT serveur Whisper si la qualité navigateur déçoit.
+- **NLU custom** : entraîner un NER agricole sur `fr_dep_news_trf` à partir du golden corpus enrichi par retours utilisateurs.
+- **Multi-instance** : passer `ConversationStore` et `LexiconRepository` derrière Redis pour scaling horizontal sans sticky sessions.
+- **Phase 2 fonctions Ekylibre** : grand livre, impressions (nécessite un wrapper API côté Ekylibre).

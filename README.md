@@ -1,56 +1,126 @@
 # Duke
 
-Agricultural assistant chatbot for Ekylibre. Python service exposing a WebSocket API to a JS client embedded in Ekylibre. Records interventions and answers read-only questions over the farm data.
+Agricultural assistant chatbot for Ekylibre. Python service exposing a WebSocket API to a JS chat widget embedded in Ekylibre's backend. Records interventions in natural French ("j'ai pulvérisé 2L de Karaté Zeon sur la parcelle Bel Air ce matin pendant 2h") and answers read-only questions over the farm data ("combien de Karaté Zeon me reste-t-il ?").
 
 See [`REQUIREMENTS.md`](./REQUIREMENTS.md) and [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the full spec.
 
-## Status — iteration 1: foundations
+## Status
 
-This iteration delivers the skeleton: project layout, configuration, FastAPI app with health/readiness/metrics, WebSocket transport (auth + heartbeat + dispatcher with stubbed handlers), Ekylibre API client (token validation only), Ekylibre read-only Postgres adapter with the per-tenant isolation primitive, Duke DB schema with Alembic migrations, structured logging, Prometheus metrics, Docker setup, and tests including the multi-tenant isolation test.
+MVP delivered through iteration 6.
 
-NLU (spaCy), LLM providers (Claude + Mistral), and the use cases (`InterventionRecorder`, `QueryAnswerer`) are stubbed and land in iteration 2.
+| Layer | Delivered |
+|---|---|
+| Foundations | FastAPI + WS transport, Alembic migrations, structured logs, Prometheus metrics, multi-tenant Postgres isolation primitive (`SET LOCAL search_path` + readonly tx) |
+| NLU | spaCy pipeline (`fr_core_news_lg` with blank-fr fallback), French temporal parser, `EntityRuler` from lexicon, rule-based intent classifier, golden corpus + accuracy gate |
+| LLM | `LLMRouter` Claude + Mistral with automatic fallback, streaming for Q&A, function-calling for intervention extraction, prompt caching |
+| Use cases | `InterventionRecorder` (POST /api/v2/interventions), `QueryAnswerer` (qa_stock + qa_history via Postgres direct read) |
+| Persistence | `conversation_session` / `conversation_turn` / `intervention_draft` / `audit_event` in Duke's own DB, RGPD retention job, hashed tenant/user identifiers |
+| Hardening | Per-session sliding-window rate limiter, best-effort persistence (Duke DB outages don't block users) |
+| Frontend | Vanilla JS chat widget (bubble + panel + draft card) embedded in Ekylibre's `backend.html.haml` via `app/javascript/duke/` and `app/views/shared/_duke_widget.html.haml` |
+| Ekylibre side | `GET /api/v2/users/me` endpoint, `duke_reader` read-only Postgres role + Rake task, `Backend::DukeWidgetController#show` config endpoint |
 
-## Bootstrap (dev)
+**Tests**: 104 passing (default suite) + 6 opt-in e2e against a running Ekylibre.
+
+## Bootstrap
 
 Requires `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`) and Docker.
+
+### Backend (this repo)
 
 ```bash
 uv sync --extra dev
 
 cp .env.example .env
-# Edit .env: set EKYLIBRE_DB_DSN to the Ekylibre read-only account, point DUKE_DB_DSN to the local postgres-duke
+$EDITOR .env  # set EKYLIBRE_DB_DSN, DUKE_DB_DSN, ANTHROPIC_API_KEY, HASH_SECRET
 
-docker compose -f docker/docker-compose.yml up -d postgres-duke
-
-uv run alembic upgrade head
-
-uv run uvicorn duke.main:app --reload
+# Bring up Duke + its Postgres on the shared `ekylibre` Docker network.
+docker compose -f docker/docker-compose.yml up -d
 ```
 
-The service listens on `http://localhost:8000`. Endpoints:
-
+Endpoints:
 - `GET /healthz` — liveness
-- `GET /readyz` — readiness (checks Duke DB and Ekylibre DB)
+- `GET /readyz` — readiness (Duke DB + Ekylibre DB)
 - `GET /metrics` — Prometheus
-- `WS /ws` — WebSocket entry point
+- `WS /ws` — chat WebSocket entry point
+
+### Ekylibre side (in `/home/djoulin/projects/ekylibre`)
+
+The widget is consumed by Ekylibre. Three artifacts must be in place:
+
+1. **`GET /api/v2/users/me`** route + controller (branch `duke/api-v2-users-me`, merged).
+2. **`duke_reader` Postgres role** provisioned via `db/setup/duke_reader.sql` and `rake duke_reader:grant_tenants` (branch `duke/duke-reader-role`, merged).
+3. **Chat widget** in `app/javascript/duke/` + `app/views/shared/_duke_widget.html.haml` rendered from `backend.html.haml` (branch `duke/chat-widget`).
+
+Tell Rails where to reach Duke via env (in Ekylibre's compose):
+```yaml
+services:
+  app:
+    environment:
+      - DUKE_WS_URL=ws://localhost:8000/ws
+      - ELEVATOR=header   # so Duke can reach a tenant via X-Tenant header
+```
+
+### CLI tools
+
+```bash
+# RGPD retention: anonymize conversation_turn.text past RETENTION_DAYS_TURN_TEXT
+uv run python -m duke.cli.retention purge
+
+# Database migrations
+uv run alembic upgrade head
+```
 
 ## Tests
 
 ```bash
-uv run pytest                    # unit tests (no docker required)
-uv run pytest -m integration     # adds the multi-tenant isolation test (needs docker)
+uv run pytest                    # 104 tests (unit + integration with testcontainers)
+uv run pytest -m integration     # only the docker-backed subset
 uv run ruff check                # lint
-uv run ruff format --check       # formatting
 ```
 
-The integration test spins up a throwaway Postgres via `testcontainers` and verifies that `EkylibreReadDb.with_tenant()` only ever sees one tenant schema at a time, that pool connections are reset between tenants, and that invalid schema names are rejected.
+Opt-in e2e against a running Ekylibre (see `tests/integration/README.md` for the full procedure):
 
-## Roadmap
+```bash
+RUN_EKYLIBRE_E2E=1 uv run pytest -m ekylibre_real
+```
 
-- **Iteration 2 — NLU + use cases**: spaCy pipeline (`fr_core_news_lg`), `EntityRuler` driven by `LexiconRepository`, French temporal parser, `LLMRouter` (Claude + Mistral), `InterventionRecorder` use case bound to US-1.
-- **Iteration 3 — Q&A**: `QueryAnswerer` use case backed by `EkylibreReadDb` + LLM phrasing, golden-set evaluation in CI.
-- **Iteration 4 — Hardening**: retention/anonymization job, rate limiting, end-to-end test against a real Ekylibre container.
+## Architecture overview
 
-## External dependencies (must land before MVP can run end-to-end)
+- **Reads** go directly to Ekylibre's Postgres via `duke_reader` (read-only role, `SET LOCAL search_path TO {tenant}, lexicon, public` per query).
+- **Writes** (intervention creation) go through Ekylibre's REST API v2.
+- **Token validation** via `GET /api/v2/users/me` on every WS auth.
+- **NLU** is a hybrid: spaCy extracts cheap candidates (entities, temporal, intent), the LLM (Claude or Mistral via fallback router) handles ambiguity and structured extraction via function calling.
+- **Q&A** is grounded: the SQL is deterministic (Duke decides what to fetch from intent), the LLM only formats the answer.
+- **Multi-tenant isolation** is enforced both app-side (regex-validated identifiers + readonly tx) and DB-side (REVOKE writes on `duke_reader`).
 
-See `ARCHITECTURE.md` §10. Notably: `GET /api/v2/users/me` route to add on the Ekylibre side, and the `duke_reader` Postgres role provisioned with `USAGE` on tenant schemas + `lexicon`.
+See `ARCHITECTURE.md` for the full design.
+
+## Iterations
+
+| # | Theme | Status |
+|---|---|---|
+| 1 | Foundations (transport, migrations, isolation primitive) | ✅ |
+| 2 | NLU (spaCy + LLM router) + InterventionRecorder | ✅ |
+| 3 | Q&A (QueryAnswerer + streaming + golden corpus) | ✅ |
+| 4 | Hardening (persistence, retention, rate limiting) | ✅ |
+| 5 | Real e2e (Ekylibre `/users/me` + `duke_reader` + opt-in test suite) | ✅ |
+| 6 | Frontend chat widget in Ekylibre backend | ✅ |
+| 7+ | Voice (Web Speech API), spaCy NER training, Whisper STT, multi-instance scaling | future |
+
+External-side dependencies (`ARCHITECTURE.md §10`): D1–D5 done, D6 (LLM API keys) is ops/secret management.
+
+## Project layout
+
+```
+src/duke/
+├── transport/         # WS server + Pydantic message schemas
+├── application/       # Orchestrator, InterventionRecorder, QueryAnswerer
+├── nlu/               # spaCy pipeline, intent classifier, temporal parser
+│   └── llm/           # LLMProvider Protocol + Claude / Mistral / Router
+├── domain/            # Pure Pydantic models (Intent, InterventionDraft, ...)
+├── integration/
+│   ├── ekylibre/      # api_client, read_db, lexicon_repo, mappers
+│   └── store/         # SQLAlchemy models, repositories, retention, hashing
+├── observability/     # structlog config, Prometheus metrics
+└── cli/               # Operational entrypoints (retention)
+```

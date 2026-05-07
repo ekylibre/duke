@@ -21,7 +21,7 @@ dependencies = [
     "spacy>=3.8",
     "rapidfuzz>=3.10",
     "anthropic>=0.40",
-    "mistralai>=1.2",
+    "mistralai>=1.2,<2",
 ]
 
 [project.optional-dependencies]
