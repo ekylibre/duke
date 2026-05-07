@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
@@ -27,6 +29,9 @@ from duke.integration.ekylibre.api_client import (
     EkylibreTenantError,
     EkylibreUnavailableError,
 )
+from duke.integration.store.hashing import tenant_hash, user_hash
+from duke.integration.store.models import TurnOutcome, TurnRole
+from duke.integration.store.repositories import ConversationRepository
 from duke.nlu.llm.base import LLMUnavailableError
 from duke.observability.metrics import errors_total, user_messages_total, ws_sessions_active
 from duke.transport.messages import (
@@ -50,6 +55,7 @@ from duke.transport.messages import (
     UserMessage,
     client_message_adapter,
 )
+from duke.transport.rate_limit import RateLimiter
 
 log = structlog.get_logger(__name__)
 
@@ -59,6 +65,31 @@ HEARTBEAT_GRACE_S = 60.0
 
 WS_CLOSE_POLICY_VIOLATION = 1008
 WS_CLOSE_INTERNAL_ERROR = 1011
+
+
+@dataclass
+class _SessionContext:
+    """Per-WS-connection state, threaded through the dispatcher."""
+
+    ws_session_id: str
+    creds: EkylibreCredentials
+    api: EkylibreApiClient
+    recorder: InterventionRecorder
+    orchestrator: ConversationOrchestrator
+    repo: ConversationRepository | None
+    rate_limiter: RateLimiter
+    db_session_id: uuid.UUID | None = None
+    drafts: dict[str, InterventionDraft] = field(default_factory=dict)
+    draft_db_ids: dict[str, uuid.UUID] = field(default_factory=dict)
+
+
+async def _safe(coro):
+    """Best-effort persistence: log on failure, never propagate."""
+    try:
+        return await coro
+    except Exception as exc:
+        log.warning("persistence.error", error=str(exc))
+        return None
 
 
 async def ws_endpoint(websocket: WebSocket) -> None:
@@ -80,12 +111,33 @@ async def ws_endpoint(websocket: WebSocket) -> None:
         if creds is None:
             return
 
+        settings = websocket.app.state.settings
         ws_sessions_active.inc()
         try:
-            api = EkylibreApiClient(creds, websocket.app.state.http_client)
-            recorder: InterventionRecorder = websocket.app.state.intervention_recorder
-            orchestrator: ConversationOrchestrator = websocket.app.state.orchestrator
-            await _run_session(websocket, session_id, creds, api, recorder, orchestrator)
+            ctx = _SessionContext(
+                ws_session_id=session_id,
+                creds=creds,
+                api=EkylibreApiClient(creds, websocket.app.state.http_client),
+                recorder=websocket.app.state.intervention_recorder,
+                orchestrator=websocket.app.state.orchestrator,
+                repo=getattr(websocket.app.state, "conversation_repo", None),
+                rate_limiter=RateLimiter(limit=settings.rate_limit_per_min),
+            )
+
+            if ctx.repo is not None:
+                ctx.db_session_id = await _safe(
+                    ctx.repo.start_session(
+                        tenant_hash=tenant_hash(creds.tenant, secret=settings.hash_secret),
+                        user_hash=user_hash(creds.email, secret=settings.hash_secret),
+                        llm_provider=settings.llm_default_provider,
+                    )
+                )
+
+            try:
+                await _run_session(websocket, ctx)
+            finally:
+                if ctx.repo is not None and ctx.db_session_id is not None:
+                    await _safe(ctx.repo.end_session(ctx.db_session_id))
         finally:
             ws_sessions_active.dec()
 
@@ -183,18 +235,9 @@ async def _await_auth(websocket: WebSocket, session_id: str) -> EkylibreCredenti
     return creds
 
 
-async def _run_session(
-    websocket: WebSocket,
-    session_id: str,
-    creds: EkylibreCredentials,
-    api: EkylibreApiClient,
-    recorder: InterventionRecorder,
-    orchestrator: ConversationOrchestrator,
-) -> None:
+async def _run_session(websocket: WebSocket, ctx: _SessionContext) -> None:
     last_pong = asyncio.get_running_loop().time()
     heartbeat_task = asyncio.create_task(_heartbeat_loop(websocket, lambda: last_pong))
-
-    drafts: dict[str, InterventionDraft] = {}
 
     try:
         while True:
@@ -221,7 +264,7 @@ async def _run_session(
                 last_pong = asyncio.get_running_loop().time()
                 continue
 
-            await _dispatch(websocket, session_id, msg, creds, api, recorder, orchestrator, drafts)
+            await _dispatch(websocket, ctx, msg)
     finally:
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -239,22 +282,25 @@ async def _heartbeat_loop(websocket: WebSocket, last_pong: Any) -> None:
             return
 
 
-async def _dispatch(
-    websocket: WebSocket,
-    session_id: str,
-    msg: object,
-    creds: EkylibreCredentials,
-    api: EkylibreApiClient,
-    recorder: InterventionRecorder,
-    orchestrator: ConversationOrchestrator,
-    drafts: dict[str, InterventionDraft],
-) -> None:
+async def _dispatch(websocket: WebSocket, ctx: _SessionContext, msg: object) -> None:
     if isinstance(msg, UserMessage):
-        await _handle_user_message(websocket, session_id, msg, creds, orchestrator, drafts)
+        if not ctx.rate_limiter.try_acquire():
+            errors_total.labels(code=ErrorCode.RATE_LIMITED.value).inc()
+            await _send(
+                websocket,
+                ErrorMessage(
+                    id=msg.id,
+                    code=ErrorCode.RATE_LIMITED,
+                    message="Trop de messages, attends quelques secondes.",
+                    retryable=True,
+                ),
+            )
+            return
+        await _handle_user_message(websocket, ctx, msg)
         return
 
     if isinstance(msg, ConfirmInterventionMessage):
-        await _handle_confirm(websocket, session_id, msg, api, recorder, drafts)
+        await _handle_confirm(websocket, ctx, msg)
         return
 
     if isinstance(msg, ClarifyMessage):
@@ -270,29 +316,57 @@ async def _dispatch(
         return
 
     if isinstance(msg, CancelMessage):
-        drafts.pop(msg.id, None)
+        ctx.drafts.pop(msg.id, None)
         await _send(
             websocket,
             AssistantMessage(id=msg.id, text="Annulé.", final=True),
         )
         return
 
-    log.warning("ws.unhandled_message", session_id=session_id, type=type(msg).__name__)
+    log.warning("ws.unhandled_message", session_id=ctx.ws_session_id, type=type(msg).__name__)
 
 
 async def _handle_user_message(
     websocket: WebSocket,
-    session_id: str,
+    ctx: _SessionContext,
     msg: UserMessage,
-    creds: EkylibreCredentials,
-    orchestrator: ConversationOrchestrator,
-    drafts: dict[str, InterventionDraft],
 ) -> None:
+    started = time.monotonic()
+
+    if ctx.repo is not None and ctx.db_session_id is not None:
+        await _safe(
+            ctx.repo.record_turn(
+                session_id=ctx.db_session_id,
+                role=TurnRole.USER,
+                text=msg.text,
+            )
+        )
+
     await _send(websocket, ThinkingMessage(id=msg.id))
+
+    async def _record_assistant(
+        text: str | None,
+        outcome: TurnOutcome,
+        intent: str | None = None,
+    ) -> None:
+        if ctx.repo is None or ctx.db_session_id is None:
+            return
+        latency_ms = int((time.monotonic() - started) * 1000)
+        await _safe(
+            ctx.repo.record_turn(
+                session_id=ctx.db_session_id,
+                role=TurnRole.ASSISTANT,
+                text=text,
+                intent=intent,
+                latency_ms=latency_ms,
+                outcome=outcome,
+            )
+        )
+
     try:
-        result = await orchestrator.handle(msg.text, tenant_schema=creds.tenant)
+        result = await ctx.orchestrator.handle(msg.text, tenant_schema=ctx.creds.tenant)
     except LLMUnavailableError as exc:
-        log.warning("ws.llm_unavailable", session_id=session_id, error=str(exc))
+        log.warning("ws.llm_unavailable", session_id=ctx.ws_session_id, error=str(exc))
         errors_total.labels(code=ErrorCode.LLM_UNAVAILABLE.value).inc()
         await _send(
             websocket,
@@ -306,9 +380,10 @@ async def _handle_user_message(
             ),
         )
         user_messages_total.labels(outcome="llm_error").inc()
+        await _record_assistant(None, TurnOutcome.ERROR)
         return
     except Exception as exc:
-        log.exception("ws.orchestrator_error", session_id=session_id, error=str(exc))
+        log.exception("ws.orchestrator_error", session_id=ctx.ws_session_id, error=str(exc))
         errors_total.labels(code=ErrorCode.INTERNAL.value).inc()
         await _send(
             websocket,
@@ -320,10 +395,11 @@ async def _handle_user_message(
             ),
         )
         user_messages_total.labels(outcome="error").inc()
+        await _record_assistant(None, TurnOutcome.ERROR)
         return
 
     if isinstance(result, DraftReady):
-        drafts[msg.id] = result.draft
+        ctx.drafts[msg.id] = result.draft
         user_messages_total.labels(outcome="draft").inc()
         await _send(
             websocket,
@@ -337,6 +413,28 @@ async def _handle_user_message(
                 confidence=result.draft.confidence,
             ),
         )
+        outcome = TurnOutcome.AMBIGUITY if result.draft.ambiguities else TurnOutcome.OK
+        await _record_assistant(None, outcome, intent="record_intervention")
+
+        if ctx.repo is not None and ctx.db_session_id is not None:
+            user_turn_id = await _safe(
+                ctx.repo.record_turn(
+                    session_id=ctx.db_session_id,
+                    role=TurnRole.SYSTEM,
+                    text=None,
+                    intent="record_intervention",
+                )
+            )
+            if user_turn_id is not None:
+                draft_id = await _safe(
+                    ctx.repo.record_intervention_draft(
+                        session_id=ctx.db_session_id,
+                        turn_id=user_turn_id,
+                        draft=result.draft.model_dump(mode="json"),
+                    )
+                )
+                if draft_id is not None:
+                    ctx.draft_db_ids[msg.id] = draft_id
         return
 
     if isinstance(result, QaStream):
@@ -348,7 +446,7 @@ async def _handle_user_message(
                 accumulated.append(token)
                 await _send(websocket, AssistantTokenMessage(id=msg.id, delta=token))
         except LLMUnavailableError as exc:
-            log.warning("ws.qa_stream_unavailable", session_id=session_id, error=str(exc))
+            log.warning("ws.qa_stream_unavailable", session_id=ctx.ws_session_id, error=str(exc))
             errors_total.labels(code=ErrorCode.LLM_UNAVAILABLE.value).inc()
             await _send(
                 websocket,
@@ -360,13 +458,13 @@ async def _handle_user_message(
                 ),
             )
             user_messages_total.labels(outcome="qa_error").inc()
+            await _record_assistant(None, TurnOutcome.ERROR)
             return
 
         user_messages_total.labels(outcome="qa_answer").inc()
-        await _send(
-            websocket,
-            AssistantMessage(id=msg.id, text="".join(accumulated), final=True),
-        )
+        full = "".join(accumulated)
+        await _send(websocket, AssistantMessage(id=msg.id, text=full, final=True))
+        await _record_assistant(full, TurnOutcome.OK, intent="qa")
         return
 
     if isinstance(result, OutOfScope):
@@ -375,6 +473,7 @@ async def _handle_user_message(
             websocket,
             OutOfScopeMessage(id=msg.id, reason=result.reason, suggestion=result.suggestion),
         )
+        await _record_assistant(result.reason, TurnOutcome.OK, intent="out_of_scope")
         return
 
     if isinstance(result, UnknownIntent):
@@ -383,16 +482,14 @@ async def _handle_user_message(
             websocket,
             AssistantMessage(id=msg.id, text=result.message, final=True),
         )
+        await _record_assistant(result.message, TurnOutcome.OK, intent="unknown")
         return
 
 
 async def _handle_confirm(
     websocket: WebSocket,
-    session_id: str,
+    ctx: _SessionContext,
     msg: ConfirmInterventionMessage,
-    api: EkylibreApiClient,
-    recorder: InterventionRecorder,
-    drafts: dict[str, InterventionDraft],
 ) -> None:
     try:
         draft = InterventionDraft.model_validate(msg.draft)
@@ -409,7 +506,7 @@ async def _handle_confirm(
         return
 
     try:
-        created = await recorder.confirm(api, draft)
+        created = await ctx.recorder.confirm(ctx.api, draft)
     except ValueError as exc:
         await _send(
             websocket,
@@ -422,7 +519,7 @@ async def _handle_confirm(
         )
         return
     except (EkylibreAuthError, EkylibreTenantError) as exc:
-        log.warning("ws.confirm_auth_error", session_id=session_id, error=str(exc))
+        log.warning("ws.confirm_auth_error", session_id=ctx.ws_session_id, error=str(exc))
         await _send(
             websocket,
             ErrorMessage(
@@ -434,7 +531,7 @@ async def _handle_confirm(
         )
         return
     except EkylibreUnavailableError as exc:
-        log.warning("ws.confirm_unavailable", session_id=session_id, error=str(exc))
+        log.warning("ws.confirm_unavailable", session_id=ctx.ws_session_id, error=str(exc))
         await _send(
             websocket,
             ErrorMessage(
@@ -446,7 +543,7 @@ async def _handle_confirm(
         )
         return
     except EkylibreBadRequestError as exc:
-        log.warning("ws.confirm_bad_request", session_id=session_id, error=str(exc))
+        log.warning("ws.confirm_bad_request", session_id=ctx.ws_session_id, error=str(exc))
         await _send(
             websocket,
             ErrorMessage(
@@ -458,7 +555,26 @@ async def _handle_confirm(
         )
         return
 
-    drafts.pop(msg.id, None)
+    ctx.drafts.pop(msg.id, None)
+    draft_db_id = ctx.draft_db_ids.pop(msg.id, None)
+
+    if ctx.repo is not None and draft_db_id is not None:
+        await _safe(
+            ctx.repo.mark_draft_confirmed(
+                draft_id=draft_db_id,
+                ekylibre_intervention_id=created.id,
+            )
+        )
+
+    if ctx.repo is not None and ctx.db_session_id is not None:
+        await _safe(
+            ctx.repo.record_audit(
+                event_type="intervention.confirmed",
+                session_id=ctx.db_session_id,
+                details={"ekylibre_id": created.id},
+            )
+        )
+
     await _send(
         websocket,
         InterventionCreatedMessage(id=msg.id, ekylibre_id=created.id, url=created.url),

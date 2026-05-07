@@ -23,6 +23,7 @@ from duke.integration.ekylibre.lexicon_repo import (
     LexiconRepository,
 )
 from duke.integration.ekylibre.read_db import EkylibreReadDb
+from duke.integration.store.repositories import ConversationRepository
 from duke.nlu.llm.base import LLMProvider
 from duke.nlu.llm.router import LLMRouter
 from duke.nlu.pipeline import NlpPipeline
@@ -88,6 +89,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.intervention_recorder = recorder
     app.state.query_answerer = query_answerer
     app.state.orchestrator = orchestrator
+    app.state.conversation_repo = ConversationRepository(duke_sessionmaker)
 
     log.info(
         "startup.ready",

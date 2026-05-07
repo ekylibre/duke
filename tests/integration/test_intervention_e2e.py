@@ -157,6 +157,9 @@ def test_us1_full_flow(
         {
             "allowed_ws_origins": [],
             "ekylibre_api_base_url": EKYLIBRE_BASE,
+            "rate_limit_per_min": 30,
+            "hash_secret": "test-secret",
+            "llm_default_provider": "fake",
         },
     )()
 

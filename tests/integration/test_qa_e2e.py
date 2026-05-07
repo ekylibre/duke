@@ -116,7 +116,13 @@ def _bind_app(app: FastAPI, http_client: httpx.AsyncClient, intent: Intent) -> N
     app.state.settings = type(
         "S",
         (),
-        {"allowed_ws_origins": [], "ekylibre_api_base_url": EKYLIBRE_BASE},
+        {
+            "allowed_ws_origins": [],
+            "ekylibre_api_base_url": EKYLIBRE_BASE,
+            "rate_limit_per_min": 30,
+            "hash_secret": "test-secret",
+            "llm_default_provider": "fake",
+        },
     )()
 
 

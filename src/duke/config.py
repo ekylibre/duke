@@ -45,6 +45,9 @@ class Settings(BaseSettings):
 
     spacy_model: str = "fr_core_news_lg"
 
+    hash_secret: str = "change-me-in-prod"
+    retention_days_turn_text: int = 90
+
     @field_validator("allowed_ws_origins", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:
