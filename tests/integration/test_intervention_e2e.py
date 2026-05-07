@@ -20,6 +20,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from duke.application.intervention_recorder import InterventionRecorder
+from duke.application.orchestrator import ConversationOrchestrator
+from duke.application.query_answerer import QueryAnswerer
 from duke.domain.intent import Intent, IntentResult
 from duke.integration.ekylibre.lexicon_repo import (
     DEFAULT_PROCEDURES,
@@ -120,8 +122,35 @@ def test_us1_full_flow(
     http_client: httpx.AsyncClient,
     recorder: InterventionRecorder,
 ) -> None:
+    lexicon = InMemoryLexiconRepository(
+        Lexicon(products=[], procedures=list(DEFAULT_PROCEDURES), units=list(DEFAULT_UNITS))
+    )
+
+    class _NullReadDb:
+        from contextlib import asynccontextmanager as _acm
+
+        @_acm
+        async def with_tenant(self, schema: str):
+            class _R:
+                async def stock_for_variant(self, _vid: int):
+                    return None
+
+                async def interventions_in_range(self, _start, _end, limit=200):
+                    return []
+
+            yield _R()
+
+    qa = QueryAnswerer(
+        pipeline=_FakePipeline(),
+        lexicon_repo=lexicon,
+        read_db=_NullReadDb(),  # type: ignore[arg-type]
+        llm=_FakeLLMRouter(),  # type: ignore[arg-type]
+    )
+    orchestrator = ConversationOrchestrator(recorder=recorder, query_answerer=qa)
+
     app.state.http_client = http_client
     app.state.intervention_recorder = recorder
+    app.state.orchestrator = orchestrator
     app.state.settings = type(
         "S",
         (),

@@ -11,6 +11,13 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from duke.application.intervention_recorder import InterventionRecorder
+from duke.application.orchestrator import (
+    ConversationOrchestrator,
+    DraftReady,
+    OutOfScope,
+    QaStream,
+    UnknownIntent,
+)
 from duke.domain.intervention import InterventionDraft
 from duke.integration.ekylibre.api_client import (
     EkylibreApiClient,
@@ -24,6 +31,7 @@ from duke.nlu.llm.base import LLMUnavailableError
 from duke.observability.metrics import errors_total, user_messages_total, ws_sessions_active
 from duke.transport.messages import (
     AssistantMessage,
+    AssistantTokenMessage,
     AuthErrorMessage,
     AuthMessage,
     AuthOkMessage,
@@ -34,6 +42,7 @@ from duke.transport.messages import (
     ErrorMessage,
     InterventionCreatedMessage,
     InterventionDraftMessage,
+    OutOfScopeMessage,
     PingMessage,
     PongMessage,
     ServerMessage,
@@ -75,7 +84,8 @@ async def ws_endpoint(websocket: WebSocket) -> None:
         try:
             api = EkylibreApiClient(creds, websocket.app.state.http_client)
             recorder: InterventionRecorder = websocket.app.state.intervention_recorder
-            await _run_session(websocket, session_id, api, recorder)
+            orchestrator: ConversationOrchestrator = websocket.app.state.orchestrator
+            await _run_session(websocket, session_id, creds, api, recorder, orchestrator)
         finally:
             ws_sessions_active.dec()
 
@@ -176,8 +186,10 @@ async def _await_auth(websocket: WebSocket, session_id: str) -> EkylibreCredenti
 async def _run_session(
     websocket: WebSocket,
     session_id: str,
+    creds: EkylibreCredentials,
     api: EkylibreApiClient,
     recorder: InterventionRecorder,
+    orchestrator: ConversationOrchestrator,
 ) -> None:
     last_pong = asyncio.get_running_loop().time()
     heartbeat_task = asyncio.create_task(_heartbeat_loop(websocket, lambda: last_pong))
@@ -209,7 +221,7 @@ async def _run_session(
                 last_pong = asyncio.get_running_loop().time()
                 continue
 
-            await _dispatch(websocket, session_id, msg, api, recorder, drafts)
+            await _dispatch(websocket, session_id, msg, creds, api, recorder, orchestrator, drafts)
     finally:
         heartbeat_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -231,12 +243,14 @@ async def _dispatch(
     websocket: WebSocket,
     session_id: str,
     msg: object,
+    creds: EkylibreCredentials,
     api: EkylibreApiClient,
     recorder: InterventionRecorder,
+    orchestrator: ConversationOrchestrator,
     drafts: dict[str, InterventionDraft],
 ) -> None:
     if isinstance(msg, UserMessage):
-        await _handle_user_message(websocket, session_id, msg, recorder, drafts)
+        await _handle_user_message(websocket, session_id, msg, creds, orchestrator, drafts)
         return
 
     if isinstance(msg, ConfirmInterventionMessage):
@@ -270,12 +284,13 @@ async def _handle_user_message(
     websocket: WebSocket,
     session_id: str,
     msg: UserMessage,
-    recorder: InterventionRecorder,
+    creds: EkylibreCredentials,
+    orchestrator: ConversationOrchestrator,
     drafts: dict[str, InterventionDraft],
 ) -> None:
     await _send(websocket, ThinkingMessage(id=msg.id))
     try:
-        draft = await recorder.draft_from_text(msg.text)
+        result = await orchestrator.handle(msg.text, tenant_schema=creds.tenant)
     except LLMUnavailableError as exc:
         log.warning("ws.llm_unavailable", session_id=session_id, error=str(exc))
         errors_total.labels(code=ErrorCode.LLM_UNAVAILABLE.value).inc()
@@ -285,8 +300,7 @@ async def _handle_user_message(
                 id=msg.id,
                 code=ErrorCode.LLM_UNAVAILABLE,
                 message=(
-                    "Le service de compréhension est indisponible, "
-                    "réessaie dans quelques instants."
+                    "Le service de compréhension est indisponible, réessaie dans quelques instants."
                 ),
                 retryable=True,
             ),
@@ -294,7 +308,7 @@ async def _handle_user_message(
         user_messages_total.labels(outcome="llm_error").inc()
         return
     except Exception as exc:
-        log.exception("ws.recorder_error", session_id=session_id, error=str(exc))
+        log.exception("ws.orchestrator_error", session_id=session_id, error=str(exc))
         errors_total.labels(code=ErrorCode.INTERNAL.value).inc()
         await _send(
             websocket,
@@ -308,17 +322,68 @@ async def _handle_user_message(
         user_messages_total.labels(outcome="error").inc()
         return
 
-    drafts[msg.id] = draft
-    user_messages_total.labels(outcome="draft").inc()
-    await _send(
-        websocket,
-        InterventionDraftMessage(
-            id=msg.id,
-            fields=draft.model_dump(mode="json", exclude={"ambiguities", "confidence", "raw_text"}),
-            ambiguities=[a.model_dump() for a in draft.ambiguities],
-            confidence=draft.confidence,
-        ),
-    )
+    if isinstance(result, DraftReady):
+        drafts[msg.id] = result.draft
+        user_messages_total.labels(outcome="draft").inc()
+        await _send(
+            websocket,
+            InterventionDraftMessage(
+                id=msg.id,
+                fields=result.draft.model_dump(
+                    mode="json",
+                    exclude={"ambiguities", "confidence", "raw_text"},
+                ),
+                ambiguities=[a.model_dump() for a in result.draft.ambiguities],
+                confidence=result.draft.confidence,
+            ),
+        )
+        return
+
+    if isinstance(result, QaStream):
+        accumulated: list[str] = []
+        try:
+            async for token in result.stream:
+                if not token:
+                    continue
+                accumulated.append(token)
+                await _send(websocket, AssistantTokenMessage(id=msg.id, delta=token))
+        except LLMUnavailableError as exc:
+            log.warning("ws.qa_stream_unavailable", session_id=session_id, error=str(exc))
+            errors_total.labels(code=ErrorCode.LLM_UNAVAILABLE.value).inc()
+            await _send(
+                websocket,
+                ErrorMessage(
+                    id=msg.id,
+                    code=ErrorCode.LLM_UNAVAILABLE,
+                    message="Service de réponse indisponible, réessaie plus tard.",
+                    retryable=True,
+                ),
+            )
+            user_messages_total.labels(outcome="qa_error").inc()
+            return
+
+        user_messages_total.labels(outcome="qa_answer").inc()
+        await _send(
+            websocket,
+            AssistantMessage(id=msg.id, text="".join(accumulated), final=True),
+        )
+        return
+
+    if isinstance(result, OutOfScope):
+        user_messages_total.labels(outcome="out_of_scope").inc()
+        await _send(
+            websocket,
+            OutOfScopeMessage(id=msg.id, reason=result.reason, suggestion=result.suggestion),
+        )
+        return
+
+    if isinstance(result, UnknownIntent):
+        user_messages_total.labels(outcome="unknown").inc()
+        await _send(
+            websocket,
+            AssistantMessage(id=msg.id, text=result.message, final=True),
+        )
+        return
 
 
 async def _handle_confirm(

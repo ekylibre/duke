@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 import structlog
@@ -11,11 +12,7 @@ log = structlog.get_logger(__name__)
 
 
 class LLMRouter:
-    """Dispatches LLM calls to a primary provider, falling back on transient errors.
-
-    No tenant/task-level overrides are wired in iteration 2; the structure is here
-    so iteration 3 can plug them via additional methods.
-    """
+    """Dispatches LLM calls to a primary provider, falling back on transient errors."""
 
     def __init__(
         self,
@@ -46,3 +43,21 @@ class LLMRouter:
             return payload, self._secondary.name
         except LLMError:
             raise
+
+    async def answer_query(
+        self,
+        question: str,
+        evidence: dict[str, Any],
+    ) -> AsyncIterator[str]:
+        provider = self._primary
+        try:
+            stream = provider.answer_query(question, evidence)
+            async for token in stream:
+                yield token
+        except LLMUnavailableError as exc:
+            log.warning("llm.primary_unavailable", provider=provider.name, error=str(exc))
+            errors_total.labels(code="LLM_UNAVAILABLE").inc()
+            if self._secondary is None:
+                raise
+            async for token in self._secondary.answer_query(question, evidence):
+                yield token

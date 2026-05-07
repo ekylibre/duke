@@ -1,15 +1,76 @@
-# Golden corpus for NLU evaluation.
-# Populated in iteration 2 (NLU). Each entry will look like:
+# Duke NLU golden corpus.
 #
-# - text: "j'ai pulvérisé 2L de Karaté Zeon sur la parcelle Bel Air ce matin pendant 2h"
-#   intent: record_intervention
-#   entities:
-#     procedure_name: spraying
-#     parcels: ["Bel Air"]
-#     inputs:
-#       - product: "Karaté Zeon"
-#         quantity: 2
-#         unit: liter
-#     started_at_kind: this_morning
-#     working_duration: PT2H
-phrases: []
+# Each entry is a French sentence with the expected intent. Used by
+# tests/integration/test_golden_intents.py to enforce a minimum accuracy
+# in CI. Extend through user feedback (see ARCHITECTURE.md §9.2).
+#
+# Intents: record_intervention | qa_stock | qa_history | out_of_scope | unknown
+
+- text: "j'ai pulvérisé 2L de Karaté Zeon sur la parcelle Bel Air ce matin pendant 2h"
+  intent: record_intervention
+
+- text: "pulvérisation de Bouillie bordelaise sur Vigne du Bas hier après-midi"
+  intent: record_intervention
+
+- text: "j'ai semé 200kg de blé sur Pré du Moulin ce matin"
+  intent: record_intervention
+
+- text: "labour de la parcelle Cantemerle hier pendant 3 heures"
+  intent: record_intervention
+
+- text: "saisie d'une intervention de fertilisation lundi"
+  intent: record_intervention
+
+- text: "enregistre une vendange manuelle aujourd'hui"
+  intent: record_intervention
+
+- text: "j'ai traité avec Pulvébois sur Les Coteaux il y a une semaine"
+  intent: record_intervention
+
+- text: "j'ai fauché Le Grand Pré ce matin pendant 1h30"
+  intent: record_intervention
+
+- text: "combien de Karaté Zeon me reste-t-il en stock ?"
+  intent: qa_stock
+
+- text: "quelle quantité de Bouillie bordelaise il me reste ?"
+  intent: qa_stock
+
+- text: "stock actuel de glyphosate"
+  intent: qa_stock
+
+- text: "il me reste combien de fioul ?"
+  intent: qa_stock
+
+- text: "quantité disponible de Roundup"
+  intent: qa_stock
+
+- text: "quelles parcelles ai-je traitées cette semaine ?"
+  intent: qa_history
+
+- text: "liste mes interventions de ce mois"
+  intent: qa_history
+
+- text: "historique des interventions sur Bel Air"
+  intent: qa_history
+
+- text: "montre-moi les dernières pulvérisations"
+  intent: qa_history
+
+- text: "qu'est-ce que j'ai fait hier ?"
+  intent: qa_history
+
+- text: "imprime-moi le grand livre"
+  intent: out_of_scope
+
+- text: "édite l'export comptable de mai"
+  intent: out_of_scope
+
+- text: "génère un PDF des factures fournisseurs"
+  intent: out_of_scope
+
+- text: "bonjour"
+  intent: unknown
+
+- text: "merci"
+  intent: unknown

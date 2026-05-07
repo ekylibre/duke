@@ -13,7 +13,7 @@ services:
         condition: service_healthy
     networks:
       - duke
-      - ekylibre_default
+      - ekylibre
     restart: unless-stopped
 
   postgres-duke:
@@ -42,5 +42,5 @@ volumes:
 networks:
   duke:
     driver: bridge
-  ekylibre_default:
+  ekylibre:
     external: true

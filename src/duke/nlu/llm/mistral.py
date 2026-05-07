@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import structlog
@@ -8,7 +9,12 @@ from mistralai import Mistral
 from mistralai.models import SDKError
 
 from duke.nlu.llm.base import LLMSchemaError, LLMUnavailableError
-from duke.nlu.llm.prompts import EXTRACT_INTERVENTION_SYSTEM, build_extraction_user_prompt
+from duke.nlu.llm.prompts import (
+    ANSWER_QUERY_SYSTEM,
+    EXTRACT_INTERVENTION_SYSTEM,
+    build_answer_user_prompt,
+    build_extraction_user_prompt,
+)
 from duke.nlu.llm.tools import (
     EXTRACT_INTERVENTION_DESCRIPTION,
     EXTRACT_INTERVENTION_SCHEMA,
@@ -76,3 +82,27 @@ class MistralProvider:
             return payload
 
         raise LLMSchemaError("Mistral did not call extract_intervention")
+
+    async def answer_query(
+        self,
+        question: str,
+        evidence: dict[str, Any],
+    ) -> AsyncIterator[str]:
+        try:
+            response = await self._client.chat.complete_async(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                messages=[
+                    {"role": "system", "content": ANSWER_QUERY_SYSTEM},
+                    {"role": "user", "content": build_answer_user_prompt(question, evidence)},
+                ],
+            )
+        except SDKError as exc:
+            raise LLMUnavailableError(f"mistral sdk error: {exc}") from exc
+
+        if not response.choices:
+            raise LLMSchemaError("Mistral returned no choices")
+        text = response.choices[0].message.content or ""
+        if isinstance(text, list):
+            text = "".join(c.text for c in text if hasattr(c, "text"))
+        yield text

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 import structlog
 from anthropic import APIError, APIStatusError, AsyncAnthropic
 
 from duke.nlu.llm.base import LLMSchemaError, LLMUnavailableError
-from duke.nlu.llm.prompts import EXTRACT_INTERVENTION_SYSTEM, build_extraction_user_prompt
+from duke.nlu.llm.prompts import (
+    ANSWER_QUERY_SYSTEM,
+    EXTRACT_INTERVENTION_SYSTEM,
+    build_answer_user_prompt,
+    build_extraction_user_prompt,
+)
 from duke.nlu.llm.tools import (
     EXTRACT_INTERVENTION_DESCRIPTION,
     EXTRACT_INTERVENTION_SCHEMA,
@@ -74,3 +80,31 @@ class ClaudeProvider:
                 return payload
 
         raise LLMSchemaError("Claude did not return a tool_use block for extract_intervention")
+
+    async def answer_query(
+        self,
+        question: str,
+        evidence: dict[str, Any],
+    ) -> AsyncIterator[str]:
+        try:
+            async with self._client.messages.stream(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                system=[
+                    {
+                        "type": "text",
+                        "text": ANSWER_QUERY_SYSTEM,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+                messages=[
+                    {"role": "user", "content": build_answer_user_prompt(question, evidence)}
+                ],
+            ) as stream:
+                async for text_delta in stream.text_stream:
+                    if text_delta:
+                        yield text_delta
+        except APIStatusError as exc:
+            raise LLMUnavailableError(f"claude status {exc.status_code}") from exc
+        except APIError as exc:
+            raise LLMUnavailableError(f"claude api error: {exc}") from exc

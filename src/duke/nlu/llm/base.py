@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
 
@@ -23,5 +24,11 @@ class LLMProvider(Protocol):
         text: str,
         hints: dict[str, Any],
     ) -> dict[str, Any]: ...
+
+    def answer_query(
+        self,
+        question: str,
+        evidence: dict[str, Any],
+    ) -> AsyncIterator[str]: ...
 
     async def health(self) -> bool: ...

@@ -12,6 +12,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from duke.application.intervention_recorder import InterventionRecorder
+from duke.application.orchestrator import ConversationOrchestrator
+from duke.application.query_answerer import QueryAnswerer
 from duke.config import Settings, get_settings
 from duke.integration.ekylibre.lexicon_repo import (
     DEFAULT_PROCEDURES,
@@ -65,16 +67,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     llm_router = LLMRouter(primary=primary, secondary=secondary)
     recorder = InterventionRecorder(pipeline=pipeline, llm=llm_router)
 
+    read_db = EkylibreReadDb(ekylibre_pool)
+    query_answerer = QueryAnswerer(
+        pipeline=pipeline,
+        lexicon_repo=lexicon_repo,
+        read_db=read_db,
+        llm=llm_router,
+    )
+    orchestrator = ConversationOrchestrator(recorder=recorder, query_answerer=query_answerer)
+
     app.state.settings = settings
     app.state.duke_engine = duke_engine
     app.state.duke_sessionmaker = duke_sessionmaker
     app.state.ekylibre_pool = ekylibre_pool
-    app.state.read_db = EkylibreReadDb(ekylibre_pool)
+    app.state.read_db = read_db
     app.state.http_client = http_client
     app.state.lexicon_repo = lexicon_repo
     app.state.nlp_pipeline = pipeline
     app.state.llm_router = llm_router
     app.state.intervention_recorder = recorder
+    app.state.query_answerer = query_answerer
+    app.state.orchestrator = orchestrator
 
     log.info(
         "startup.ready",

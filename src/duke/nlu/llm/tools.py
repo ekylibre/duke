@@ -34,8 +34,7 @@ EXTRACT_INTERVENTION_SCHEMA: dict = {
         "working_duration_seconds": {
             "type": ["integer", "null"],
             "description": (
-                "Working duration in seconds. Use only if the user explicitly "
-                "mentions a duration."
+                "Working duration in seconds. Use only if the user explicitly mentions a duration."
             ),
         },
         "targets": {
@@ -91,8 +90,7 @@ EXTRACT_INTERVENTION_SCHEMA: dict = {
         "ambiguities": {
             "type": "array",
             "description": (
-                "List of fields the model could not determine; the orchestrator "
-                "will ask the user."
+                "List of fields the model could not determine; the orchestrator will ask the user."
             ),
             "items": {
                 "type": "object",
