@@ -1,0 +1,15 @@
+# Golden corpus for NLU evaluation.
+# Populated in iteration 2 (NLU). Each entry will look like:
+#
+# - text: "j'ai pulvérisé 2L de Karaté Zeon sur la parcelle Bel Air ce matin pendant 2h"
+#   intent: record_intervention
+#   entities:
+#     procedure_name: spraying
+#     parcels: ["Bel Air"]
+#     inputs:
+#       - product: "Karaté Zeon"
+#         quantity: 2
+#         unit: liter
+#     started_at_kind: this_morning
+#     working_duration: PT2H
+phrases: []
