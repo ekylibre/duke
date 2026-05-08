@@ -16,7 +16,7 @@ MVP delivered through iteration 6 ; itération 7 ajoute l'infrastructure d'entra
 | Use cases | `InterventionRecorder` (POST /api/v2/interventions), `QueryAnswerer` (qa_stock + qa_history via Postgres direct read) |
 | Persistence | `conversation_session` / `conversation_turn` / `intervention_draft` / `audit_event` in Duke's own DB, RGPD retention job, hashed tenant/user identifiers |
 | Hardening | Per-session sliding-window rate limiter, best-effort persistence (Duke DB outages don't block users) |
-| Frontend | Vanilla JS chat widget (bubble + panel + draft card) embedded in Ekylibre's `backend.html.haml` via `app/javascript/duke/` and `app/views/shared/_duke_widget.html.haml` |
+| Frontend | Vanilla JS chat widget (bubble + panel + draft card + bouton micro Web Speech API fr-FR) embedded in Ekylibre's `backend.html.haml` via `app/javascript/duke/` and `app/views/shared/_duke_widget.html.haml` |
 | Ekylibre side | `GET /api/v2/users/me` endpoint, `duke_reader` read-only Postgres role + Rake task, `Backend::DukeWidgetController#show` config endpoint |
 
 **Tests**: 104 passing (default suite) + 6 opt-in e2e against a running Ekylibre.
@@ -121,7 +121,8 @@ See `ARCHITECTURE.md` for the full design.
 | 5 | Real e2e (Ekylibre `/users/me` + `duke_reader` + opt-in test suite) | ✅ |
 | 6 | Frontend chat widget in Ekylibre backend | ✅ |
 | 7 | NER agricole — corpus annoté + synth + train CLI + load via `DUKE_NER_MODEL_PATH` | ✅ |
-| 8+ | Voice (Web Speech API), Whisper STT, multi-instance scaling, fonctions Ekylibre phase 2 | future |
+| 8 | Saisie vocale + clarify — bouton micro Web Speech API (fr-FR), résolution d'ambiguïtés via `clarify` (textarea bascule, fiche replacée en place, draft re-extrait par Duke) | ✅ |
+| 9+ | Whisper STT serveur, multi-instance scaling, fonctions Ekylibre phase 2 | future |
 
 External-side dependencies (`ARCHITECTURE.md §10`): D1–D5 done, D6 (LLM API keys) is ops/secret management.
 

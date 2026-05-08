@@ -17,7 +17,11 @@ from duke.domain.entities import (
     ResolvedTool,
 )
 from duke.domain.intervention import InterventionDraft
-from duke.integration.ekylibre.api_client import CreatedIntervention, EkylibreApiClient
+from duke.integration.ekylibre.api_client import (
+    CreatedIntervention,
+    EkylibreApiClient,
+    ProcedureSpec,
+)
 from duke.integration.ekylibre.mappers import intervention_draft_to_payload
 from duke.nlu.llm.base import LLMSchemaError
 from duke.nlu.llm.router import LLMRouter
@@ -44,18 +48,49 @@ class InterventionRecorder:
             log.warning("intervention.llm_schema_error", error=str(exc))
             return _draft_from_nlu_only(nlu, text)
 
-        return _build_draft(raw, nlu, text)
+        draft = _build_draft(raw, nlu, text)
+        return self._canonicalize_procedure(draft)
+
+    def _canonicalize_procedure(self, draft: InterventionDraft) -> InterventionDraft:
+        """Normalize the LLM-extracted procedure name to the Procedo canonical
+        snake_case (e.g. "Labour" / "labour" / "labourer" → "ploughing").
+
+        Ekylibre's interactor rejects requests with unknown procedure names
+        ("Cannot find procedure: 'labour'") even though the lexicon has the
+        French label as an alias. We resolve via the lexicon and replace the
+        free-form value with the canonical name before the payload is built.
+        """
+        if not draft.procedure_name:
+            return draft
+        # Defensive: legacy test fakes may not expose lexicon_repo. Treat
+        # absence as "no lexicon to canonicalize against" and pass through.
+        repo = getattr(self._pipeline, "lexicon_repo", None)
+        if repo is None:
+            return draft
+        matches = repo.find_procedure(draft.procedure_name, limit=1)
+        if not matches:
+            return draft
+        canonical = getattr(matches[0].payload, "name", None)
+        if not canonical or canonical == draft.procedure_name:
+            return draft
+        log.info(
+            "intervention.procedure_canonicalized",
+            from_=draft.procedure_name,
+            to=canonical,
+        )
+        return draft.model_copy(update={"procedure_name": canonical})
 
     async def confirm(
         self,
         api: EkylibreApiClient,
         draft: InterventionDraft,
+        procedure_spec: ProcedureSpec | None = None,
     ) -> CreatedIntervention:
         if not draft.is_ready_for_post():
             raise ValueError(
                 "draft is not ready for POST (missing fields or unresolved ambiguities)"
             )
-        payload = intervention_draft_to_payload(draft)
+        payload = intervention_draft_to_payload(draft, procedure_spec=procedure_spec)
         return await api.create_intervention(payload)
 
 
@@ -93,7 +128,18 @@ def _build_draft(raw: dict[str, Any], nlu: NluResult, text: str) -> Intervention
         if t.get("raw_name")
     ]
 
-    ambiguities = [_ambiguity_from_dict(a) for a in (raw.get("ambiguities") or [])]
+    # We auto-inject a target ambiguity for every unresolved target below; any
+    # LLM-provided ambiguity that points at the same raw value would duplicate
+    # the prompt. Track the unresolved names so we can filter the LLM batch
+    # before merging.
+    unresolved_target_names = {
+        t.raw_name for t in targets if t.resolved_id is None and t.raw_name
+    }
+    ambiguities = [
+        _ambiguity_from_dict(a)
+        for a in (raw.get("ambiguities") or [])
+        if (a.get("raw_value") or "") not in unresolved_target_names
+    ]
 
     if started_at is None:
         ambiguities.append(

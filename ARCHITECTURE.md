@@ -203,7 +203,7 @@ sequenceDiagram
     participant DukeDB as Duke Postgres
 
     JS->>Duke: WS open
-    JS->>Duke: { type: "auth", token, tenant, locale }
+    JS->>Duke: { type: "auth", email, token, tenant, locale }
     Duke->>EkylApp: GET /api/v2/users/me  (X-Tenant, simple-token)
     EkylApp-->>Duke: 200 user payload
     Duke->>EkylDB: SELECT (search_path=tenant) warm cache parcelles/produits
@@ -226,7 +226,7 @@ sequenceDiagram
 
 | `type` | Champs | Description |
 |---|---|---|
-| `auth` | `token`, `tenant`, `locale?` | Premier message obligatoire. |
+| `auth` | `email`, `token`, `tenant`, `locale?` | Premier message obligatoire. `email` est requis : Ekylibre valide le `simple-token <email> <token>` et a besoin des deux. |
 | `user_message` | `id`, `text` | Phrase utilisateur (texte ou STT navigateur). |
 | `confirm_intervention` | `id`, `draft` (édité) | Validation/édition du draft. |
 | `clarify` | `id`, `answer` | Réponse à une question de désambiguïsation. |
@@ -673,8 +673,9 @@ Cas explicites en CI :
 | 5 | E2E réel | `EkylibreReadDb` aligné sur le vrai schéma, `duke_reader` provisionné, suite e2e opt-in (`RUN_EKYLIBRE_E2E=1`) |
 | 6 | Frontend | Widget JS dans Ekylibre (`app/javascript/duke/`), partial HAML, `Backend::DukeWidgetController#show` |
 | 7 | NER agricole | Corpus golden annoté (entités), synthétiseur déterministe, CLI `duke.cli.train_ner` (train + eval P/R/F1), pipeline charge le modèle via `DUKE_NER_MODEL_PATH` ; EntityRuler conservé en overlay |
+| 8 | Saisie vocale + résolution d'ambiguïtés | Bouton micro dans le widget JS Ekylibre (Web Speech API, locale `fr-FR`, single-utterance, interim → textarea, transcript éditable). Wiring complet du flow `clarify` : Duke `_handle_clarify` recombine `raw_text + Précision : <answer>` et ré-émet un `intervention_draft` mis à jour ; widget remplace la fiche existante en place et le textarea bascule en mode clarification (placeholder + bordure orange) tant que la fiche a des ambiguïtés. Aucun changement de contrat WS — Duke reçoit toujours du texte, conformément à `REQUIREMENTS §3` |
 
-**Couverture tests** : 117 tests par défaut (unit + integration testcontainers) + 6 e2e opt-in contre Ekylibre tournant + 1 smoke training opt-in.
+**Couverture tests** : 121 tests par défaut (unit + integration testcontainers) + 6 e2e opt-in contre Ekylibre tournant + 1 smoke training opt-in. Le widget JS n'a pas de suite Jest — validation manuelle dans Chrome/Edge (Firefox sans Web Speech API : le bouton est masqué).
 
 ## 12. Pistes pour la suite
 

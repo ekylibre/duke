@@ -67,9 +67,13 @@ class ScopedReader:
         return await self._conn.fetchval(query, *args)
 
     async def list_land_parcels(self, limit: int = 500) -> list[dict[str, Any]]:
+        # Ekylibre uses `dead_at` as a planned end-of-life (e.g. vine replant
+        # date), not a tombstone — many tenants have it set on every parcel.
+        # Treat NULL or future as still-alive; only past `dead_at` excludes.
         rows = await self._conn.fetch(
             "SELECT id, name FROM products "
-            "WHERE type = 'LandParcel' AND dead_at IS NULL "
+            "WHERE type = 'LandParcel' "
+            "AND (dead_at IS NULL OR dead_at > NOW()) "
             "ORDER BY name LIMIT $1",
             limit,
         )

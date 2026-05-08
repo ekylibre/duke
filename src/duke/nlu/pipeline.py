@@ -107,6 +107,10 @@ class NlpPipeline:
                 )
         return cls(load_nlp(target), lexicon_repo, parcel_names_provider)
 
+    @property
+    def lexicon_repo(self) -> LexiconRepository:
+        return self._lexicon_repo
+
     def install_entity_ruler(self, parcel_names: Iterable[str] = ()) -> None:
         patterns = patterns_from_lexicon(self._lexicon_repo.lexicon, parcel_names=parcel_names)
         if "duke_entity_ruler" in self._nlp.pipe_names:

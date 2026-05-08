@@ -26,6 +26,7 @@ class _StrictModel(BaseModel):
 
 class AuthMessage(_StrictModel):
     type: Literal["auth"] = "auth"
+    email: str
     token: str
     tenant: str
     locale: str = "fr"

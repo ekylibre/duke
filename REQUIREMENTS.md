@@ -40,8 +40,8 @@ Remplace l'ancien gem Ruby `ekylibre/ekylibre-duke` (Watson Assistant + Azure ST
 ## 4. Exigences fonctionnelles
 
 ### F1 — Connexion et authentification
-- Le client JS ouvre un WebSocket vers Duke en transmettant à l'établissement de la connexion : token API Ekylibre, identifiant de tenant, locale utilisateur (par défaut `fr`).
-- Duke valide le token contre Ekylibre avant d'accepter la session (appel à un endpoint de validation, ex. `GET /api/v2/users/me`).
+- Le client JS ouvre un WebSocket vers Duke en transmettant à l'établissement de la connexion : email + token API Ekylibre, identifiant de tenant, locale utilisateur (par défaut `fr`). L'email est requis car Ekylibre s'authentifie via `simple-token <email> <token>`.
+- Duke valide le couple email+token contre Ekylibre avant d'accepter la session (appel à `GET /api/v2/users/me`).
 - Une session WS = un utilisateur authentifié sur un tenant. Pas de partage de session.
 
 ### F2 — Saisie d'intervention par langage naturel

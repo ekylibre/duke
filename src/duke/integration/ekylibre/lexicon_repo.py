@@ -182,21 +182,58 @@ class PostgresLexiconRepository(_BaseLexiconRepository):
         return [UnitEntry(name=r["name"], label=r["human_name"]) for r in rows]
 
 
+# Canonical procedure names below match Ekylibre's actual Procedo registry
+# (validated against `Procedo.procedures.collect(&:name)` on a closeriedesterres
+# tenant, 2026-05-08). The legacy placeholders (`ploughing`, `vine_spraying`)
+# are kept as aliases so older drafts and LLM mistakes still canonicalize.
 DEFAULT_PROCEDURES = [
     ProcedureEntry(
         name="spraying",
         label="Pulverisation",
-        aliases=("pulvérisation", "pulve", "traitement phyto"),
+        aliases=("pulvérisation", "pulve", "traitement phyto", "spray"),
     ),
     ProcedureEntry(
-        name="vine_spraying",
+        name="vine_spraying_without_fertilizing",
         label="Pulverisation viticole",
-        aliases=("pulvé vigne", "traitement vigne"),
+        aliases=(
+            "pulvé vigne",
+            "traitement vigne",
+            "pulverisation vigne",
+            "vine_spraying",  # legacy alias kept for back-compat
+        ),
     ),
-    ProcedureEntry(name="sowing", label="Semis", aliases=("semer", "semence")),
-    ProcedureEntry(name="harvesting", label="Recolte", aliases=("récolte", "moisson", "vendange")),
-    ProcedureEntry(name="ploughing", label="Labour", aliases=("labourage", "labourer")),
-    ProcedureEntry(name="fertilizing", label="Fertilisation", aliases=("epandage", "engrais")),
+    ProcedureEntry(
+        name="sowing",
+        label="Semis",
+        aliases=("semer", "semence", "ensemencement"),
+    ),
+    ProcedureEntry(
+        name="harvesting",
+        label="Recolte",
+        aliases=("récolte", "moisson"),
+    ),
+    ProcedureEntry(
+        name="vine_harvesting",
+        label="Vendange",
+        aliases=("vendange", "vendanger"),
+    ),
+    ProcedureEntry(
+        name="generic_tillage",
+        label="Labour",
+        aliases=(
+            "labour",
+            "labourage",
+            "labourer",
+            "travail du sol",
+            "ploughing",  # legacy alias kept for back-compat
+            "plowing",
+        ),
+    ),
+    ProcedureEntry(
+        name="fertilizing",
+        label="Fertilisation",
+        aliases=("epandage", "engrais", "fertiliser", "amendement"),
+    ),
 ]
 
 

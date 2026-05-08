@@ -23,18 +23,33 @@ from duke.transport.messages import (
 class TestClientMessageParsing:
     def test_auth_message_valid(self) -> None:
         msg = client_message_adapter.validate_python(
-            {"type": "auth", "token": "tok", "tenant": "farm_a", "locale": "fr"}
+            {
+                "type": "auth",
+                "email": "u@ekylibre.test",
+                "token": "tok",
+                "tenant": "farm_a",
+                "locale": "fr",
+            }
         )
         assert isinstance(msg, AuthMessage)
+        assert msg.email == "u@ekylibre.test"
         assert msg.token == "tok"
         assert msg.tenant == "farm_a"
 
     def test_auth_message_locale_default(self) -> None:
         msg = client_message_adapter.validate_python(
-            {"type": "auth", "token": "tok", "tenant": "farm_a"}
+            {"type": "auth", "email": "u@ekylibre.test", "token": "tok", "tenant": "farm_a"}
         )
         assert isinstance(msg, AuthMessage)
         assert msg.locale == "fr"
+
+    def test_auth_message_missing_email_rejected(self) -> None:
+        # Ekylibre's simple-token scheme requires the email — rejecting it
+        # at the schema layer surfaces the bad client immediately.
+        with pytest.raises(ValidationError):
+            client_message_adapter.validate_python(
+                {"type": "auth", "token": "tok", "tenant": "farm_a"}
+            )
 
     def test_user_message_valid(self) -> None:
         msg = client_message_adapter.validate_python(
@@ -61,7 +76,13 @@ class TestClientMessageParsing:
     def test_extra_field_forbidden(self) -> None:
         with pytest.raises(ValidationError):
             client_message_adapter.validate_python(
-                {"type": "auth", "token": "t", "tenant": "x", "evil": True}
+                {
+                    "type": "auth",
+                    "email": "u@x",
+                    "token": "t",
+                    "tenant": "x",
+                    "evil": True,
+                }
             )
 
     def test_missing_required_field_rejected(self) -> None:

@@ -22,6 +22,7 @@ from duke.integration.ekylibre.lexicon_repo import (
     Lexicon,
     LexiconRepository,
 )
+from duke.integration.ekylibre.procedure_registry import ProcedureRegistry
 from duke.integration.ekylibre.read_db import EkylibreReadDb
 from duke.integration.store.repositories import ConversationRepository
 from duke.nlu.llm.base import LLMProvider
@@ -94,6 +95,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.query_answerer = query_answerer
     app.state.orchestrator = orchestrator
     app.state.conversation_repo = ConversationRepository(duke_sessionmaker)
+    # Live Procedo registry: empty at boot, hydrated lazily on first auth
+    # using the user's session credentials. The static DEFAULT_PROCEDURES
+    # acts as a fallback while it's empty.
+    app.state.procedure_registry = ProcedureRegistry()
 
     log.info(
         "startup.ready",

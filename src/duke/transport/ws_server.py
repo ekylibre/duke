@@ -20,6 +20,7 @@ from duke.application.orchestrator import (
     QaStream,
     UnknownIntent,
 )
+from duke.domain.entities import Ambiguity, ResolvedTarget
 from duke.domain.intervention import InterventionDraft
 from duke.integration.ekylibre.api_client import (
     EkylibreApiClient,
@@ -29,6 +30,8 @@ from duke.integration.ekylibre.api_client import (
     EkylibreTenantError,
     EkylibreUnavailableError,
 )
+from duke.integration.ekylibre.procedure_registry import ProcedureRegistry
+from duke.integration.ekylibre.read_db import EkylibreReadDb
 from duke.integration.store.hashing import tenant_hash, user_hash
 from duke.integration.store.models import TurnOutcome, TurnRole
 from duke.integration.store.repositories import ConversationRepository
@@ -78,6 +81,9 @@ class _SessionContext:
     orchestrator: ConversationOrchestrator
     repo: ConversationRepository | None
     rate_limiter: RateLimiter
+    read_db: EkylibreReadDb | None = None
+    procedure_registry: ProcedureRegistry | None = None
+    lexicon_repo: object | None = None
     db_session_id: uuid.UUID | None = None
     drafts: dict[str, InterventionDraft] = field(default_factory=dict)
     draft_db_ids: dict[str, uuid.UUID] = field(default_factory=dict)
@@ -122,7 +128,21 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 orchestrator=websocket.app.state.orchestrator,
                 repo=getattr(websocket.app.state, "conversation_repo", None),
                 rate_limiter=RateLimiter(limit=settings.rate_limit_per_min),
+                read_db=getattr(websocket.app.state, "read_db", None),
+                procedure_registry=getattr(websocket.app.state, "procedure_registry", None),
+                lexicon_repo=getattr(websocket.app.state, "lexicon_repo", None),
             )
+
+            # Lazy-hydrate the Procedo registry on first auth. Subsequent
+            # sessions short-circuit via the in-class guard. The task runs
+            # in the background — not awaited — so auth_ok responses aren't
+            # delayed by the API call. We don't keep a reference to the task;
+            # the registry's internal lock prevents concurrent hydrations.
+            if ctx.procedure_registry is not None and ctx.lexicon_repo is not None:
+                _hydration_task = asyncio.create_task(
+                    ctx.procedure_registry.hydrate(ctx.api, ctx.lexicon_repo)
+                )
+                del _hydration_task
 
             if ctx.repo is not None:
                 ctx.db_session_id = await _safe(
@@ -159,7 +179,17 @@ async def _await_auth(websocket: WebSocket, session_id: str) -> EkylibreCredenti
 
     try:
         msg = client_message_adapter.validate_python(raw)
-    except ValidationError:
+    except ValidationError as exc:
+        # Don't log the raw payload (token is in there). The error tells us which
+        # fields are missing/wrong without exposing the secret.
+        log.info(
+            "ws.auth_payload_invalid",
+            session_id=session_id,
+            errors=[
+                {"loc": ".".join(str(p) for p in e["loc"]), "type": e["type"]}
+                for e in exc.errors()
+            ],
+        )
         await _send(
             websocket,
             AuthErrorMessage(code=ErrorCode.INTERNAL, message="Invalid auth payload"),
@@ -177,7 +207,7 @@ async def _await_auth(websocket: WebSocket, session_id: str) -> EkylibreCredenti
 
     settings = websocket.app.state.settings
     creds = EkylibreCredentials(
-        email="",
+        email=msg.email,
         token=msg.token,
         tenant=msg.tenant,
         base_url=settings.ekylibre_api_base_url,
@@ -304,15 +334,7 @@ async def _dispatch(websocket: WebSocket, ctx: _SessionContext, msg: object) -> 
         return
 
     if isinstance(msg, ClarifyMessage):
-        await _send(
-            websocket,
-            ErrorMessage(
-                id=msg.id,
-                code=ErrorCode.INTERNAL,
-                message="Clarification not implemented yet (iteration 3)",
-                retryable=False,
-            ),
-        )
+        await _handle_clarify(websocket, ctx, msg)
         return
 
     if isinstance(msg, CancelMessage):
@@ -399,21 +421,10 @@ async def _handle_user_message(
         return
 
     if isinstance(result, DraftReady):
-        ctx.drafts[msg.id] = result.draft
+        draft = await _enrich_with_parcel_options(ctx, result.draft)
         user_messages_total.labels(outcome="draft").inc()
-        await _send(
-            websocket,
-            InterventionDraftMessage(
-                id=msg.id,
-                fields=result.draft.model_dump(
-                    mode="json",
-                    exclude={"ambiguities", "confidence", "raw_text"},
-                ),
-                ambiguities=[a.model_dump() for a in result.draft.ambiguities],
-                confidence=result.draft.confidence,
-            ),
-        )
-        outcome = TurnOutcome.AMBIGUITY if result.draft.ambiguities else TurnOutcome.OK
+        await _emit_draft(websocket, ctx, msg.id, draft)
+        outcome = TurnOutcome.AMBIGUITY if draft.ambiguities else TurnOutcome.OK
         await _record_assistant(None, outcome, intent="record_intervention")
 
         if ctx.repo is not None and ctx.db_session_id is not None:
@@ -430,7 +441,7 @@ async def _handle_user_message(
                     ctx.repo.record_intervention_draft(
                         session_id=ctx.db_session_id,
                         turn_id=user_turn_id,
-                        draft=result.draft.model_dump(mode="json"),
+                        draft=draft.model_dump(mode="json"),
                     )
                 )
                 if draft_id is not None:
@@ -486,6 +497,225 @@ async def _handle_user_message(
         return
 
 
+async def _handle_clarify(
+    websocket: WebSocket,
+    ctx: _SessionContext,
+    msg: ClarifyMessage,
+) -> None:
+    """Resolve an open ambiguity by either picking a candidate option or
+    re-extracting on top of the combined phrase.
+
+    Selection path (no LLM call): if `msg.answer` matches one of the parcel
+    options Duke previously suggested, we patch the unresolved target with
+    the chosen parcel's id and drop that ambiguity. Cheap and deterministic.
+
+    Free-text fallback: append `Précision : <answer>` to the original phrase
+    and rerun the recorder so the LLM gets a second chance with the extra
+    context. Used when the user typed a clarification rather than clicking.
+
+    The new draft replaces the previous one under the same `id` and is
+    re-emitted as `intervention_draft` so the widget swaps the existing card
+    and re-evaluates the Validate gate.
+    """
+    existing = ctx.drafts.get(msg.id)
+    if existing is None:
+        await _send(
+            websocket,
+            ErrorMessage(
+                id=msg.id,
+                code=ErrorCode.INTERNAL,
+                message="Aucun brouillon en cours pour cette clarification.",
+                retryable=False,
+            ),
+        )
+        return
+
+    answer = msg.answer.strip()
+
+    # Option-pick fast path: see if the user clicked a parcel candidate.
+    selected = await _apply_parcel_selection(ctx, existing, answer)
+    if selected is not None:
+        await _emit_draft(websocket, ctx, msg.id, selected)
+        return
+
+    # Free-text fallback: re-extract with the answer appended.
+    base = (existing.raw_text or "").strip()
+    combined = f"{base}. Précision : {answer}" if base else answer
+
+    await _send(websocket, ThinkingMessage(id=msg.id))
+
+    try:
+        new_draft = await ctx.recorder.draft_from_text(combined)
+    except LLMUnavailableError as exc:
+        log.warning("ws.clarify_llm_unavailable", session_id=ctx.ws_session_id, error=str(exc))
+        errors_total.labels(code=ErrorCode.LLM_UNAVAILABLE.value).inc()
+        await _send(
+            websocket,
+            ErrorMessage(
+                id=msg.id,
+                code=ErrorCode.LLM_UNAVAILABLE,
+                message="Service NLU indisponible, réessaie plus tard.",
+                retryable=True,
+            ),
+        )
+        return
+    except Exception as exc:
+        log.exception("ws.clarify_error", session_id=ctx.ws_session_id, error=str(exc))
+        errors_total.labels(code=ErrorCode.INTERNAL.value).inc()
+        await _send(
+            websocket,
+            ErrorMessage(
+                id=msg.id,
+                code=ErrorCode.INTERNAL,
+                message="Une erreur interne est survenue.",
+                retryable=False,
+            ),
+        )
+        return
+
+    # The recorder set `raw_text` on the new draft to the combined phrase
+    # ("…. Précision : <answer>"). Restore the user's original message so the
+    # `description` we send to Ekylibre matches what the user actually typed.
+    if existing.raw_text:
+        new_draft = new_draft.model_copy(update={"raw_text": existing.raw_text})
+    new_draft = await _enrich_with_parcel_options(ctx, new_draft)
+    await _emit_draft(websocket, ctx, msg.id, new_draft)
+
+
+async def _emit_draft(
+    websocket: WebSocket,
+    ctx: _SessionContext,
+    msg_id: str,
+    draft: InterventionDraft,
+) -> None:
+    ctx.drafts[msg_id] = draft
+    await _send(
+        websocket,
+        InterventionDraftMessage(
+            id=msg_id,
+            fields=draft.model_dump(
+                mode="json",
+                exclude={"ambiguities", "confidence", "raw_text"},
+            ),
+            ambiguities=[a.model_dump() for a in draft.ambiguities],
+            confidence=draft.confidence,
+        ),
+    )
+
+
+_PARCEL_OPTION_LIMIT = 5
+_PARCEL_FUZZY_THRESHOLD = 50
+
+
+async def _load_tenant_parcels(ctx: _SessionContext) -> list[dict[str, Any]]:
+    """Best-effort lookup of land parcels for the active tenant.
+
+    Returns an empty list if the read DB isn't wired or the query fails — the
+    caller falls back to LLM-based clarification, which is slower but still
+    correct.
+    """
+    if ctx.read_db is None:
+        return []
+    try:
+        async with ctx.read_db.with_tenant(ctx.creds.tenant) as reader:
+            return await reader.list_land_parcels(limit=500)
+    except Exception as exc:
+        log.warning(
+            "ws.parcel_lookup_failed", session_id=ctx.ws_session_id, error=str(exc)
+        )
+        return []
+
+
+async def _enrich_with_parcel_options(
+    ctx: _SessionContext, draft: InterventionDraft
+) -> InterventionDraft:
+    """Attach parcel candidates to each unresolved-target ambiguity.
+
+    Fuzzy-matches the unresolved `raw_value` against the tenant's land
+    parcels and stores the top-N names as `Ambiguity.options`. The widget
+    renders these as clickable buttons; clicking one becomes a `clarify`
+    that the option-pick fast path resolves without an LLM call.
+    """
+    target_ambiguities = [a for a in draft.ambiguities if a.field == "targets"]
+    if not target_ambiguities:
+        return draft
+
+    parcels = await _load_tenant_parcels(ctx)
+    if not parcels:
+        return draft
+
+    from rapidfuzz import fuzz, process
+
+    parcel_names = [p["name"] for p in parcels]
+    enriched: list[Ambiguity] = []
+    for amb in draft.ambiguities:
+        if amb.field != "targets" or amb.options:
+            enriched.append(amb)
+            continue
+        matches = process.extract(
+            amb.raw_value or "",
+            parcel_names,
+            scorer=fuzz.WRatio,
+            limit=_PARCEL_OPTION_LIMIT,
+        )
+        options = [name for name, score, _idx in matches if score >= _PARCEL_FUZZY_THRESHOLD]
+        if not options:
+            enriched.append(amb)
+            continue
+        enriched.append(amb.model_copy(update={"options": options}))
+
+    return draft.model_copy(update={"ambiguities": enriched})
+
+
+async def _apply_parcel_selection(
+    ctx: _SessionContext, draft: InterventionDraft, answer: str
+) -> InterventionDraft | None:
+    """Patch a target ambiguity directly when the user picked one of the
+    suggested parcel names. Returns the updated draft, or None if no option
+    matched (caller falls back to LLM combine).
+    """
+    candidate_names = {
+        opt for amb in draft.ambiguities if amb.field == "targets" for opt in amb.options
+    }
+    if answer not in candidate_names:
+        return None
+
+    parcels = await _load_tenant_parcels(ctx)
+    matching = [p for p in parcels if p["name"] == answer]
+    if len(matching) != 1:
+        # Either the parcel disappeared since options were emitted, or the
+        # name now collides — let the LLM path sort it out.
+        return None
+    chosen = matching[0]
+
+    new_targets: list[ResolvedTarget] = []
+    consumed_raw: str | None = None
+    for tgt in draft.targets:
+        if tgt.resolved_id is None and consumed_raw is None:
+            new_targets.append(
+                ResolvedTarget(
+                    kind=tgt.kind,
+                    raw_name=tgt.raw_name,
+                    resolved_id=int(chosen["id"]),
+                    resolved_name=str(chosen["name"]),
+                    confidence=1.0,
+                )
+            )
+            consumed_raw = tgt.raw_name
+        else:
+            new_targets.append(tgt)
+
+    if consumed_raw is None:
+        return None
+
+    new_ambiguities = [
+        a
+        for a in draft.ambiguities
+        if not (a.field == "targets" and a.raw_value == consumed_raw)
+    ]
+    return draft.model_copy(update={"targets": new_targets, "ambiguities": new_ambiguities})
+
+
 async def _handle_confirm(
     websocket: WebSocket,
     ctx: _SessionContext,
@@ -505,8 +735,26 @@ async def _handle_confirm(
         )
         return
 
+    # Clients don't echo `raw_text` back on confirm (it's excluded from the
+    # `intervention_draft` payload), so the validated draft has none. Re-attach
+    # the user's original phrase from the server-side cache so the mapper can
+    # surface it as the Ekylibre intervention `description`.
+    server_draft = ctx.drafts.get(msg.id)
+    if server_draft and server_draft.raw_text and not draft.raw_text:
+        draft = draft.model_copy(update={"raw_text": server_draft.raw_text})
+
+    procedure_spec = None
+    if ctx.procedure_registry and draft.procedure_name:
+        # `get_or_fetch` returns the cached spec when the registry is
+        # already hydrated and falls back to a single `GET /api/v2/procedures/:id`
+        # otherwise — important so the Procedo-aware mapping works even
+        # when a session confirms before the background hydration finishes.
+        procedure_spec = await ctx.procedure_registry.get_or_fetch(
+            draft.procedure_name, ctx.api
+        )
+
     try:
-        created = await ctx.recorder.confirm(ctx.api, draft)
+        created = await ctx.recorder.confirm(ctx.api, draft, procedure_spec=procedure_spec)
     except ValueError as exc:
         await _send(
             websocket,

@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch supersedes any in-flight run for that branch.
+# `main` runs are never cancelled so the post-merge image build always lands.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install dev deps
+        run: uv sync --extra dev --frozen
+      - name: Ruff check
+        run: uv run ruff check
+      # `ruff format --check` is intentionally not run yet — the codebase has
+      # historically been linted but not auto-formatted. Add it once a single
+      # `uv run ruff format` cleanup commit lands.
+
+  test:
+    name: Test (pytest, default suite)
+    runs-on: ubuntu-latest
+    # The default suite includes integration tests backed by testcontainers
+    # (they spawn ephemeral Postgres containers). Ubuntu runners ship with
+    # Docker available on the host socket, so no extra service definition
+    # is needed — testcontainers reuses /var/run/docker.sock directly.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install deps
+        run: uv sync --extra dev --frozen
+      - name: Run pytest
+        # Skips the opt-in markers (`ekylibre_real`, `ner_training`) — those
+        # need a live Ekylibre tenant or a heavy spaCy training run that
+        # CI shouldn't carry by default. Both are gated by env vars in their
+        # respective module-level `pytest.skip` calls.
+        run: uv run pytest -v --tb=short
+
+  build-image:
+    name: Build Docker image
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    # Build on every push and PR for confidence the image still assembles,
+    # but only push to GHCR from main — pull_request_target events run with
+    # the base repo's secrets, but `pull_request` doesn't have the registry
+    # token, and we don't want forks pushing under our org.
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/duke-api
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+      - name: Build (and push on main)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # GHA cache lets layers (especially `uv sync --frozen`) survive
+          # between runs without burning CI time on dependency reinstalls.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

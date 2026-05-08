@@ -136,7 +136,14 @@ def test_qa_stock_streams_and_finalizes(app: FastAPI, http_client: httpx.AsyncCl
         )
 
         with TestClient(app) as client, client.websocket_connect("/ws") as ws:
-            ws.send_json({"type": "auth", "token": "tok-xyz", "tenant": "farm_a"})
+            ws.send_json(
+                {
+                    "type": "auth",
+                    "email": "user@farm.example",
+                    "token": "tok-xyz",
+                    "tenant": "farm_a",
+                }
+            )
             assert ws.receive_json()["type"] == "auth_ok"
 
             ws.send_json(
@@ -174,7 +181,14 @@ def test_out_of_scope_emits_dedicated_message(app: FastAPI, http_client: httpx.A
         )
 
         with TestClient(app) as client, client.websocket_connect("/ws") as ws:
-            ws.send_json({"type": "auth", "token": "tok", "tenant": "farm_a"})
+            ws.send_json(
+                {
+                    "type": "auth",
+                    "email": "u@e.x",
+                    "token": "tok",
+                    "tenant": "farm_a",
+                }
+            )
             assert ws.receive_json()["type"] == "auth_ok"
 
             ws.send_json({"type": "user_message", "id": "m1", "text": "imprime le grand livre"})
