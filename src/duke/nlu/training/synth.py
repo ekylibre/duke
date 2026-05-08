@@ -25,6 +25,8 @@ from duke.nlu.entity_ruler import (
     LABEL_PROCEDURE,
     LABEL_PRODUCT,
     LABEL_QUANTITY,
+    LABEL_TOOL,
+    LABEL_WORKER,
 )
 from duke.nlu.training.converter import AnnotatedExample, EntitySpan
 
@@ -105,6 +107,41 @@ DEFAULT_DATES: list[str] = [
     "à 14h30",
 ]
 
+# Common French first names — annotated as DUKE_WORKER. Names alone aren't
+# obviously workers without context; the templates below place them as the
+# subject of an action verb so the model learns "<Name> a <verb>" as a
+# worker-attribution pattern.
+DEFAULT_WORKERS: list[str] = [
+    "Antoine",
+    "David",
+    "Jean-Michel",
+    "Marie",
+    "Philippe",
+    "Sophie",
+    "Thomas",
+    "Lucas",
+    "Camille",
+    "Pierre",
+    "Patrick",
+    "Margaret",
+]
+
+# Common agricultural tools / equipment. The Procedo registry distinguishes
+# these by `filter` (motorized_vehicle, equipment, …) but for the NER all
+# fall under DUKE_TOOL.
+DEFAULT_TOOLS: list[str] = [
+    "le tracteur",
+    "le sécateur",
+    "la charrue",
+    "l'andaineur",
+    "le pulvérisateur",
+    "la herse",
+    "le gyrobroyeur",
+    "la moissonneuse",
+    "la remorque",
+    "le motoculteur",
+]
+
 
 @dataclass(frozen=True)
 class _Template:
@@ -164,6 +201,33 @@ RECORD_TEMPLATES: list[_Template] = [
         "record_intervention",
         {"noun": LABEL_PROCEDURE, "product": LABEL_PRODUCT},
     ),
+    # Worker-attribution patterns: "<Worker> a <verb> sur <parcel>".
+    _Template(
+        "{worker} a {verb} sur {parcel} {date}",
+        "record_intervention",
+        {"worker": LABEL_WORKER, "verb": LABEL_PROCEDURE, "parcel": LABEL_PARCEL},
+    ),
+    _Template(
+        "{noun} par {worker} sur {parcel}",
+        "record_intervention",
+        {"noun": LABEL_PROCEDURE, "worker": LABEL_WORKER, "parcel": LABEL_PARCEL},
+    ),
+    # Tool-attribution patterns: "<verb> avec <tool>".
+    _Template(
+        "j'ai {verb} {parcel} avec {tool} {date}",
+        "record_intervention",
+        {"verb": LABEL_PROCEDURE, "parcel": LABEL_PARCEL, "tool": LABEL_TOOL},
+    ),
+    _Template(
+        "{noun} sur {parcel} par {worker} avec {tool}",
+        "record_intervention",
+        {
+            "noun": LABEL_PROCEDURE,
+            "parcel": LABEL_PARCEL,
+            "worker": LABEL_WORKER,
+            "tool": LABEL_TOOL,
+        },
+    ),
 ]
 
 QA_STOCK_TEMPLATES: list[_Template] = [
@@ -222,6 +286,8 @@ class SynthConfig:
     quantities: list[str] = field(default_factory=lambda: list(DEFAULT_QUANTITIES))
     durations: list[str] = field(default_factory=lambda: list(DEFAULT_DURATIONS))
     dates: list[str] = field(default_factory=lambda: list(DEFAULT_DATES))
+    workers: list[str] = field(default_factory=lambda: list(DEFAULT_WORKERS))
+    tools: list[str] = field(default_factory=lambda: list(DEFAULT_TOOLS))
     templates: list[_Template] = field(default_factory=lambda: list(ALL_TEMPLATES))
 
     @classmethod
@@ -262,6 +328,8 @@ def _pick_slots(
         "qty": rng.choice(cfg.quantities),
         "duration": rng.choice(cfg.durations),
         "date": rng.choice(cfg.dates),
+        "worker": rng.choice(cfg.workers),
+        "tool": rng.choice(cfg.tools),
     }
     return {slot: pool[slot] for slot in needed}
 

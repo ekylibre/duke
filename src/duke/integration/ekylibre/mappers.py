@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from duke.domain.intervention import InterventionDraft
 from duke.integration.ekylibre.api_client import ProcedureSpec
 from duke.integration.ekylibre.procedure_registry import parameter_name_for_role
+
+# Ekylibre's intervention interactor compares started_at and stopped_at
+# unconditionally (`stopped_at < started_at` is checked in Ruby), so a nil
+# stopped_at crashes with `comparison of ActiveSupport::TimeWithZone with
+# nil failed`. When the user phrasing only pinned one anchor (e.g. "à 14h"
+# with no end), we synthesize a stopped_at from the working_duration if
+# present, or default to a 1-hour slot. The user can edit before confirm.
+_DEFAULT_INTERVENTION_DURATION = timedelta(hours=1)
 
 # Ekylibre's `Api::V2::BaseController#create_params` requires every external
 # create request to carry a `provider` envelope ({vendor, name}) so the resource
@@ -99,14 +108,20 @@ def intervention_draft_to_payload(
         if t.resolved_id is not None
     ]
 
-    working_periods: list[dict[str, Any]] = []
-    if draft.stopped_at is not None:
-        working_periods.append(
-            {
-                "started_at": draft.started_at.isoformat(),
-                "stopped_at": draft.stopped_at.isoformat(),
-            }
+    # Always emit a working_period: the interactor compares started/stopped
+    # and crashes on a nil stopped_at. Synthesize a sensible end if the LLM
+    # / temporal parser only resolved a start.
+    stopped_at = draft.stopped_at
+    if stopped_at is None:
+        stopped_at = draft.started_at + (
+            draft.working_duration or _DEFAULT_INTERVENTION_DURATION
         )
+    working_periods: list[dict[str, Any]] = [
+        {
+            "started_at": draft.started_at.isoformat(),
+            "stopped_at": stopped_at.isoformat(),
+        }
+    ]
 
     # `Api::V2::InterventionsController#create_params` calls
     # `super.permit(common_params_to_permit)` and the permit list expects the

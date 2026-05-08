@@ -93,7 +93,10 @@ jobs:
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # GHA cache lets layers (especially `uv sync --frozen`) survive
-          # between runs without burning CI time on dependency reinstalls.
+          # GHA cache lets layers survive between runs:
+          #   - `uv sync --frozen` (heavy dep install)
+          #   - `spacy download fr_core_news_lg` (~545 MB pulled once)
+          #   - `train_ner` (re-runs only when the YAML corpus or CLI changes)
+          # The trainer stage adds ~2 min cold-start; with cache, near-zero.
           cache-from: type=gha
           cache-to: type=gha,mode=max

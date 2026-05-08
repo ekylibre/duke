@@ -8,7 +8,14 @@
 #              when the substring repeats. The converter resolves spans to
 #              character offsets at training time and validates token alignment.
 #
-# Labels: DUKE_PRODUCT | DUKE_PROCEDURE | DUKE_PARCEL | DUKE_QUANTITY
+# Labels: DUKE_PRODUCT | DUKE_PROCEDURE | DUKE_PARCEL | DUKE_QUANTITY |
+#         DUKE_WORKER | DUKE_TOOL
+#
+# Dates and durations are NOT NER labels — `nlu/temporal.py` extracts them
+# deterministically (regex over French phrasing: "ce matin", "pendant 2h",
+# "à 14h30", "15/03/2024") into a structured `TemporalExtraction` that
+# feeds the LLM via NLU hints. Annotating dates/durations as entities would
+# duplicate signal without helping the resolution path.
 #
 # Used by:
 #   - tests/integration/test_golden_intents.py (intent accuracy gate)
@@ -23,6 +30,7 @@
     - {label: DUKE_QUANTITY, span: "2L"}
     - {label: DUKE_PRODUCT, span: "Karaté Zeon"}
     - {label: DUKE_PARCEL, span: "Bel Air"}
+    - {label: DUKE_WORKER, span: "j'ai"}
 
 - text: "pulvérisation de Bouillie bordelaise sur Vigne du Bas hier après-midi"
   intent: record_intervention
@@ -44,7 +52,6 @@
   entities:
     - {label: DUKE_PROCEDURE, span: "labour"}
     - {label: DUKE_PARCEL, span: "Cantemerle"}
-    - {label: DUKE_QUANTITY, span: "3 heures"}
 
 - text: "saisie d'une intervention de fertilisation lundi"
   intent: record_intervention
@@ -62,12 +69,14 @@
     - {label: DUKE_PROCEDURE, span: "traité"}
     - {label: DUKE_PRODUCT, span: "Pulvébois"}
     - {label: DUKE_PARCEL, span: "Les Coteaux"}
+    - {label: DUKE_WORKER, span: "j'ai"}
 
 - text: "j'ai fauché Le Grand Pré ce matin pendant 1h30"
   intent: record_intervention
   entities:
     - {label: DUKE_PROCEDURE, span: "fauché"}
     - {label: DUKE_PARCEL, span: "Le Grand Pré"}
+    - {label: DUKE_WORKER, span: "j'ai"}
 
 - text: "combien de Karaté Zeon me reste-t-il en stock ?"
   intent: qa_stock
@@ -129,3 +138,1329 @@
 
 - text: "merci"
   intent: unknown
+
+# --- Field-collected phrases (real user input + placeholders for annotation
+# coverage). Worker names, tools and times of day stay unannotated; the
+# `target`/`targets`/`othertarget` tokens model structural parcel slots so the
+# NER learns positional cues even on placeholder-heavy inputs.
+
+- text: "Alexia a préparé les semences pour le troupeau 14"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_WORKER, span: "Alexia"}
+
+- text: "Alimentation d'un troupeau sur la parcelle 12"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Alimentation"}
+
+- text: "amendement"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "amendement"}
+
+- text: "Amendement sur les target et othertarget"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Amendement"}
+    - {label: DUKE_PARCEL, span: "target", nth: 0}
+    - {label: DUKE_PARCEL, span: "othertarget"}
+
+- text: "arrachage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "arrachage"}
+
+- text: "Arrosage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Arrosage"}
+
+- text: "Arrosage sur les targets"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Arrosage"}
+    - {label: DUKE_PARCEL, span: "targets"}
+
+- text: "AutreVache a vu le vétérinaire"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_WORKER, span: "vétérinaire"}
+
+- text: "Bâchage mis en place sur les grands pièces"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Bâchage"}
+    - {label: DUKE_PARCEL, span: "les grands pièces"}
+
+- text: "Baptise a mis en place l'irriguation au petit echerrat"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "irriguation"}
+    - {label: DUKE_PARCEL, span: "petit echerrat"}
+    - {label: DUKE_WORKER, span: "Baptise"}
+
+- text: "Benjamin a fauché sur le mais voisin"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "fauché"}
+    - {label: DUKE_PARCEL, span: "mais voisin"}
+    - {label: DUKE_WORKER, span: "Benjamin"}
+
+- text: "broyage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "broyage"}
+
+- text: "Broyage de serments sur la parcelle target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Broyage de serments"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "broyage des sarments"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "broyage des sarments"}
+
+- text: "broyage inter rangs"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "broyage inter rangs"}
+
+- text: "Buttage sur bousses vertes par Margaret"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Buttage"}
+    - {label: DUKE_PARCEL, span: "bousses vertes"}
+    - {label: DUKE_WORKER, span: "Margaret"}
+
+- text: "Changement de pièce sur la toiture de l'enclos"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Changement de pièce"}
+
+- text: "chaussage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "chaussage"}
+
+- text: "Comment enregistrer une intervention ?"
+  intent: unknown
+
+- text: "Comment je fais pour enregistrer une intervention ?"
+  intent: unknown
+
+- text: "complantation"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "complantation"}
+
+- text: "Continionnement des graines"
+  intent: record_intervention
+
+- text: "David et Thierry récolte sur le blé dur 2020 avec le tracteur renault 110"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "récolte"}
+    - {label: DUKE_PRODUCT, span: "blé dur 2020"}
+    - {label: DUKE_TOOL, span: "tracteur renault 110"}
+    - {label: DUKE_WORKER, span: "David"}
+    - {label: DUKE_WORKER, span: "Thierry"}
+
+- text: "Déchaumage sur la renanbrie par David"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Déchaumage"}
+    - {label: DUKE_PARCEL, span: "la renanbrie"}
+    - {label: DUKE_WORKER, span: "David"}
+
+- text: "déchaussage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "déchaussage"}
+
+- text: "décompactage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "décompactage"}
+
+- text: "décompactage sur target pendant 2 heures"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "décompactage"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "Déplacement de mes animaux"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Déplacement"}
+
+- text: "désherbage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "désherbage"}
+
+- text: "Desherbage à la vapeur ce matin sur tout le domaine"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Desherbage à la vapeur"}
+    - {label: DUKE_PARCEL, span: "tout le domaine"}
+
+- text: "Désherbage sur les targs"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Désherbage"}
+    - {label: DUKE_PARCEL, span: "targs"}
+
+- text: "Desherbinage hier sur othertarget et target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Desherbinage"}
+    - {label: DUKE_PARCEL, span: "othertarget"}
+    - {label: DUKE_PARCEL, span: "target", nth: 1}
+
+- text: "Desinfection de l'enclos par Worker"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Desinfection"}
+    - {label: DUKE_WORKER, span: "Worker"}
+
+- text: "déstratification"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "déstratification"}
+
+- text: "Douglas a réparé l'épampreuse ce matin"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "réparé"}
+    - {label: DUKE_WORKER, span: "Douglas"}
+    - {label: DUKE_TOOL, span: "épampreuse"}
+
+- text: "ébourgeonnage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "ébourgeonnage"}
+
+- text: "écimage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "écimage"}
+
+- text: "ecimage sur les jeunes plants"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "ecimage"}
+
+- text: "éclaircir"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "éclaircir"}
+
+- text: "efeuillage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "efeuillage"}
+
+- text: "Efeuillage par Worker"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Efeuillage"}
+    - {label: DUKE_WORKER, span: "Worker"}
+
+- text: "effeuillage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "effeuillage"}
+
+- text: "enlever des pieds"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "enlever des pieds"}
+
+- text: "Enregistre aussi un ébourgeonnage sur les targets"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "ébourgeonnage"}
+    - {label: DUKE_PARCEL, span: "targets"}
+
+- text: "Enregistre des fenaisons"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "fenaisons"}
+
+- text: "Enregistre la récolte du blé dur 2020 avec le tracteur case ih par David et Antoine"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "récolte"}
+    - {label: DUKE_PRODUCT, span: "blé dur 2020"}
+    - {label: DUKE_TOOL, span: "tracteur case ih"}
+    - {label: DUKE_WORKER, span: "David"}
+    - {label: DUKE_WORKER, span: "Antoine"}
+
+- text: "enregistre l'arrachage sur target et target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "arrachage"}
+    - {label: DUKE_PARCEL, span: "target", nth: 0}
+    - {label: DUKE_PARCEL, span: "target", nth: 1}
+
+- text: "Enregistre l'insémination artificielle de Marguerite"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "insémination artificielle"}
+
+- text: "Enregistrement d'une intervention"
+  intent: record_intervention
+
+- text: "Enregistrement d'une protection anti-gel"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "protection anti-gel"}
+
+- text: "Enregistre moi une intervention"
+  intent: record_intervention
+
+- text: "Enregistre que j'ai Nettoyé l'enclos des bêtes"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Nettoyé"}
+
+- text: "Enregistre que j'ai taillé"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "taillé"}
+
+- text: "Enregistre qu'hier jerem a retiré le filet du bouleytreau à 10h"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "retiré le filet"}
+    - {label: DUKE_PARCEL, span: "bouleytreau"}
+
+- text: "Enregistrer un défanage sur tout les pieds de plounéour"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "défanage"}
+
+- text: "Enregistre un amendement"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "amendement"}
+
+- text: "enregistre un buttage pour tamisage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "buttage"}
+
+- text: "enregistre un chaussage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "chaussage"}
+
+- text: "Enregistre un déchaussage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "déchaussage"}
+
+- text: "Enregistre un désherbage sur les jeunes plants"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "désherbage"}
+
+- text: "Enregistre un desherbage thermique à 11h"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "desherbage thermique"}
+
+- text: "Enregistre un desherbinage sur target par worker"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "desherbinage"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "Enregistre une complantation sur les targets hier"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "complantation"}
+    - {label: DUKE_PARCEL, span: "targets"}
+
+- text: "Enregistre une cueillette sur les targets et other targets"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "cueillette"}
+    - {label: DUKE_PARCEL, span: "targets", nth: 0}
+    - {label: DUKE_PARCEL, span: "other targets"}
+
+- text: "Enregistre une déstratification sur les targets"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "déstratification"}
+    - {label: DUKE_PARCEL, span: "targets"}
+
+- text: "Enregistre un efeuillage sur targetother"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "efeuillage"}
+    - {label: DUKE_PARCEL, span: "targetother"}
+
+- text: "Enregistre un effeuillage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "effeuillage"}
+
+- text: "Enregistre une intervention"
+  intent: record_intervention
+
+- text: "Enregistre une intervention de pressage sur la tar avec worker pendant 45 minutes"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pressage"}
+    - {label: DUKE_PARCEL, span: "tar"}
+    - {label: DUKE_WORKER, span: "worker"}
+
+- text: "Enregistre une intervention de terrassement sur les vignes 12 par michel"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "terrassement"}
+    - {label: DUKE_PARCEL, span: "vignes 12"}
+    - {label: DUKE_WORKER, span: "michel"}
+
+- text: "Enregistre une intervention taille avec le tracteur"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "taille"}
+    - {label: DUKE_TOOL, span: "tracteur"}
+
+- text: "Enregistre une opération"
+  intent: record_intervention
+
+- text: "Enregistre un épamprage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "épamprage"}
+
+- text: "Enregistre une plantation par worker sur target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "plantation"}
+    - {label: DUKE_PARCEL, span: "target"}
+    - {label: DUKE_WORKER, span: "worker"}
+
+- text: "Enregistre une pose de capsules sur target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pose de capsules"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "Enregistre une pose de manchonis"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pose de manchonis"}
+
+- text: "Enregistre une récolte"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "récolte"}
+
+- text: "Enregistre une relevage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "relevage"}
+
+- text: "Enregistre une taille"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "taille"}
+
+- text: "Enregistre un hersage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "hersage"}
+
+- text: "Enregistre un intervention"
+  intent: record_intervention
+
+- text: "Enregistre un labour"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "labour"}
+
+- text: "enregistre un labour sur les targets et targets"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "labour"}
+    - {label: DUKE_PARCEL, span: "targets", nth: 0}
+    - {label: DUKE_PARCEL, span: "targets", nth: 1}
+
+- text: "Enregistre un relevage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "relevage"}
+
+- text: "Enregistre un semis avec pulvérisation"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "semis"}
+
+- text: "Enregistre un semis entre les rangs"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "semis"}
+
+- text: "Enregistre un soulevage des cultures sur barmesis"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "soulevage des cultures"}
+    - {label: DUKE_PARCEL, span: "barmesis"}
+
+- text: "Enregistre un terrassement"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "terrassement"}
+
+- text: "Ensilage fait avant hier par Roméo"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Ensilage"}
+    - {label: DUKE_WORKER, span: "Roméo"}
+
+- text: "Ensilage indirect vers le batiment 3"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Ensilage indirect"}
+
+- text: "épamprage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "épamprage"}
+
+- text: "fertilisation"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "fertilisation"}
+
+- text: "Fertilisation à enregistrer sur les targets"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Fertilisation"}
+    - {label: DUKE_PARCEL, span: "targets"}
+
+- text: "fertilisation foliaire"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "fertilisation foliaire"}
+
+- text: "fertiliser"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "fertiliser"}
+
+- text: "Fini le semis"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "semis"}
+
+- text: "Fréd a monté une serre"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_WORKER, span: "Fréd"}
+    - {label: DUKE_PROCEDURE, span: "monté une serre"}
+
+- text: "hersage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "hersage"}
+
+- text: "Hersage Jean Michel à 14h avec l'andaineur et le gyro"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Hersage"}
+    - {label: DUKE_WORKER, span: "Jean Michel"}
+    - {label: DUKE_TOOL, span: "andaineur"}
+    - {label: DUKE_TOOL, span: "gyro"}
+
+- text: "Hier binage sur bousseau à 13h34 par Dominique"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "binage"}
+    - {label: DUKE_PARCEL, span: "bousseau"}
+    - {label: DUKE_WORKER, span: "Dominique"}
+
+- text: "Identification des vaches sur zone 3 12h"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Identification"}
+
+- text: "Implantation d'un semis de couvert"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Implantation d'un semis de couvert"}
+
+- text: "Insémination sur Marguerite et AutreVache"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Insémination"}
+
+- text: "Intervention"
+  intent: record_intervention
+
+- text: "Intervention à saisir"
+  intent: record_intervention
+
+- text: "Intervention d'ébourgeonnage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "ébourgeonnage"}
+
+- text: "Intervention de broyage de sarments"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "broyage de sarments"}
+
+- text: "Intervention de broyage faite avec worker sur target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "broyage"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "Intervention de déchaussage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "déchaussage"}
+
+- text: "Intervention de desherbage manuel sur les vernets"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "desherbage manuel"}
+
+- text: "Intervention de désherbage sur les targets et targetother avec worker et avec le tool"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "désherbage"}
+    - {label: DUKE_PARCEL, span: "targets"}
+    - {label: DUKE_PARCEL, span: "targetother"}
+    - {label: DUKE_WORKER, span: "worker"}
+    - {label: DUKE_TOOL, span: "tool"}
+
+- text: "Intervention de fertilisation"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "fertilisation"}
+
+- text: "Intervention de fertilisation foliaire sur les vignes terminée"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "fertilisation foliaire"}
+
+- text: "Intervention de manutention"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "manutention"}
+
+- text: "Intervention de moisson ce matin"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "moisson"}
+
+- text: "Intervention d'épamprage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "épamprage"}
+
+- text: "Intervention de pliage terminée"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pliage"}
+
+- text: "Intervention de pose de capsule de biocontrole sur la target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pose de capsule de biocontrole"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "Intervention de pose de culture sur le silo avec Antoine"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pose de culture"}
+    - {label: DUKE_PARCEL, span: "silo"}
+    - {label: DUKE_WORKER, span: "Antoine"}
+
+- text: "Intervention de pose de manchons sur la parcelle target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pose de manchons"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "Intervention de pressage sur tout le blé de l'exploitation"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pressage"}
+    - {label: DUKE_PRODUCT, span: "blé"}
+
+- text: "intervention de rechaussage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "rechaussage"}
+
+- text: "Intervention de relevage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "relevage"}
+
+- text: "Intervention de semis inter-rang"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "semis inter-rang"}
+
+- text: "Intervention de superposition"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "superposition"}
+
+- text: "Intervention de taille préliminaire sur target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "taille préliminaire"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "Intervention de tirage de bois"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "tirage de bois"}
+
+- text: "Intervention de vendange"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "vendange"}
+
+- text: "Intervention de vendanges sur les targets"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "vendanges"}
+    - {label: DUKE_PARCEL, span: "targets"}
+
+- text: "Intervention du protection au gel sur target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "protection au gel"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "intervention sur target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "irrigation"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "irrigation"}
+
+- text: "Irrigation sur la target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Irrigation"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "J'ai amendé sur la culture targetother"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "amendé"}
+    - {label: DUKE_PARCEL, span: "targetother"}
+
+- text: "J'ai arrosé"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "arrosé"}
+
+- text: "J'ai biné avec Fred et Antoinette sur bernessard"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "biné"}
+
+- text: "J'ai chaussé sur les vignes"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "chaussé"}
+    - {label: DUKE_PARCEL, span: "les vignes"}
+
+- text: "J'ai déchaussé sur target et targetother"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "déchaussé"}
+    - {label: DUKE_PARCEL, span: "target", nth: 0}
+    - {label: DUKE_PARCEL, span: "targetother"}
+
+- text: "J'ai déplacé mes animaux vers le batiment"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "déplacé"}
+
+- text: "J'ai effeuillé sur target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "effeuillé"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "J'ai enlevé un pied sur targetother"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "enlevé un pied"}
+    - {label: DUKE_PARCEL, span: "targetother"}
+
+- text: "J'ai entretenu les installations sur sat12"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "entretenu"}
+
+- text: "J'ai fait une pré-taille"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pré-taille"}
+
+- text: "J'ai fait un semis de var"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "semis"}
+
+- text: "J'ai fertilisé les feuilles sur target avec le tool"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "fertilisé"}
+    - {label: DUKE_PARCEL, span: "target"}
+    - {label: DUKE_TOOL, span: "tool"}
+
+- text: "J'ai fini avec les tâches administratives à 18h"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "tâches administratives"}
+
+- text: "j'ai fini l'intervention de broyage inter-rangs"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "broyage inter-rangs"}
+
+- text: "J'ai fini une intervention"
+  intent: record_intervention
+
+- text: "J'ai hersé ce matin"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "hersé"}
+
+- text: "J'ai irrigué sur la target avec le"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "irrigué"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "J'ai nourri les vaches"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "nourri"}
+
+- text: "J'ai palissé avec Yvan sur la petite pièce"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "palissé"}
+    - {label: DUKE_WORKER, span: "Yvan"}
+    - {label: DUKE_PARCEL, span: "la petite pièce"}
+
+- text: "J'ai posé des capsules"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "posé des capsules"}
+
+- text: "J'ai posé un filet de protection sur la culture target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "posé un filet"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "J'ai retiré des feuilles sur target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "retiré des feuilles"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "J'ai semé et pulvérisé ce matin"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "semé"}
+
+- text: "J'ai terrassé avec le sécateur sur target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "terrassé"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "J'ai tout labouré"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "labouré"}
+
+- text: "J'ai une intervention à sauvegarder"
+  intent: record_intervention
+
+- text: "J'ai une intervention à sauver"
+  intent: record_intervention
+
+- text: "J'ai une intervention sous la main"
+  intent: record_intervention
+
+- text: "Je veux donner une intervention"
+  intent: record_intervention
+
+- text: "Je veux enregistrer intervention"
+  intent: record_intervention
+
+- text: "Je veux enregistrer une intervention"
+  intent: record_intervention
+
+- text: "Joséphine a butté hier sur bord A12"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "butté"}
+    - {label: DUKE_PARCEL, span: "bord A12"}
+    - {label: DUKE_WORKER, span: "Joséphine"}
+
+- text: "Julien a donné à manger à Rex et marguerite"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "donné à manger"}
+    - {label: DUKE_WORKER, span: "Julien"}
+
+- text: "labour"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "labour"}
+
+- text: "Labour à saisir"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Labour"}
+
+- text: "Le 14 juin, on a ensilé le blé"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "ensilé"}
+    - {label: DUKE_PRODUCT, span: "blé"}
+
+- text: "Le champ vernet a été destratifié à 12h"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "destratifié"}
+    - {label: DUKE_PARCEL, span: "champ vernet"}
+
+- text: "Léo pour fauchage du blé"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "fauchage"}
+    - {label: DUKE_PRODUCT, span: "blé"}
+    - {label: DUKE_WORKER, span: "Léo"}
+
+- text: "Luc a desherbé au gaz à 13h"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "desherbé"}
+    - {label: DUKE_TOOL, span: "gaz"}
+    - {label: DUKE_WORKER, span: "Luc"}
+
+- text: "Lucas a soulevé les petites"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "soulevé"}
+    - {label: DUKE_PARCEL, span: "les petites"}
+    - {label: DUKE_WORKER, span: "Lucas"}
+
+- text: "Manuel a déchaumé hier sur les premiers rangs"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "déchaumé"}
+    - {label: DUKE_WORKER, span: "Manuel"}
+
+- text: "Manutention dans le bâtiment 4"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Manutention"}
+
+- text: "Marcel vient de rammasser les oeufs"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "rammasser les oeufs"}
+    - {label: DUKE_WORKER, span: "Marcel"}
+
+- text: "Matthieu conditionnement des tomates"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "conditionnement"}
+    - {label: DUKE_WORKER, span: "Matthieu"}
+
+- text: "Mise en paturage du troupeau 12"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Mise en paturage"}
+
+- text: "Mise en place d'un alimentation individuelle sur saint porchaire 08"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Mise en place d'un alimentation individuelle"}
+    - {label: DUKE_PARCEL, span: "saint porchaire 08"}
+
+- text: "Mise en place d'une alimentation individuelle"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Mise en place d'une alimentation individuelle"}
+
+- text: "moisson"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "moisson"}
+
+- text: "Montage de serre hier à 15h tout l'après midi"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Montage de serre"}
+
+- text: "Myriam binage inter rang sur sur les joux serrés"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "binage inter rang"}
+    - {label: DUKE_PARCEL, span: "les joux serrés"}
+    - {label: DUKE_WORKER, span: "Myriam"}
+
+- text: "On a changé une pièce sur le tracteur PIO SOLVA"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "changé une pièce"}
+    - {label: DUKE_TOOL, span: "tracteur PIO SOLVA"}
+
+- text: "On a fini une intervention"
+  intent: record_intervention
+
+- text: "Opération de relevage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "relevage"}
+
+- text: "Paillage et débâchage sur le silo hier"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Paillage"}
+    - {label: DUKE_PARCEL, span: "le silo"}
+
+- text: "Patrick a terrassé près de la vigne"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "terrassé"}
+    - {label: DUKE_PARCEL, span: "la vigne"}
+    - {label: DUKE_WORKER, span: "Patrick"}
+
+- text: "Pierre a écimé les vieux pieds"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "écimé"}
+    - {label: DUKE_PARCEL, span: "les vieux pieds"}
+    - {label: DUKE_WORKER, span: "Pierre"}
+
+- text: "plantation"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "plantation"}
+
+- text: "pliage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pliage"}
+
+- text: "Pollenisation installée sur la coste"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Pollenisation"}
+    - {label: DUKE_PARCEL, span: "la coste"}
+
+- text: "pose de capsule"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pose de capsule"}
+
+- text: "Pose de cloture près de la forêt brie"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Pose de cloture"}
+    - {label: DUKE_PARCEL, span: "la forêt brie"}
+
+- text: "pose de filet"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pose de filet"}
+
+- text: "Pose de filet par Arthur le 14 sur sorre"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Pose de filet"}
+    - {label: DUKE_PARCEL, span: "sorre"}
+    - {label: DUKE_WORKER, span: "Arthur"}
+
+- text: "Préparation des aliments par Marcel à 14h"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Préparation des aliments"}
+    - {label: DUKE_WORKER, span: "Marcel"}
+
+- text: "pressage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pressage"}
+
+- text: "pré-taille"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pré-taille"}
+
+- text: "protection anti-gel"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "protection anti-gel"}
+
+- text: "pulvé"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pulvé"}
+
+- text: "Pulvérisaiton sur le blé dur 2020 avec le tracteur 14 et la remorque"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Pulvérisaiton"}
+    - {label: DUKE_PRODUCT, span: "blé dur 2020"}
+    - {label: DUKE_TOOL, span: "tracteur 14"}
+    - {label: DUKE_TOOL, span: "remorque"}
+
+- text: "pulvérisation"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pulvérisation"}
+
+- text: "Pulvérisation avec le pulvé 3 sur les plants verts de bougre"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Pulvérisation"}
+    - {label: DUKE_TOOL, span: "pulvé 3"}
+    - {label: DUKE_PARCEL, span: "les plants verts de bougre"}
+
+- text: "Rammassage d'oeufs par Aymeric"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Rammassage d'oeufs"}
+    - {label: DUKE_WORKER, span: "Aymeric"}
+
+- text: "rechaussage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "rechaussage"}
+
+- text: "récolte"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "récolte"}
+
+- text: "Récolte du blé dur 2020 avec le tracteur case ih par David et Antoine"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Récolte"}
+    - {label: DUKE_PRODUCT, span: "blé dur 2020"}
+    - {label: DUKE_TOOL, span: "tracteur case ih"}
+    - {label: DUKE_WORKER, span: "David"}
+    - {label: DUKE_WORKER, span: "Antoine"}
+
+- text: "relevage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "relevage"}
+
+- text: "Réparation du pulvé ce matin par Antoine"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Réparation"}
+    - {label: DUKE_TOOL, span: "pulvé"}
+    - {label: DUKE_WORKER, span: "Antoine"}
+
+- text: "Retiens mon intervenion"
+  intent: record_intervention
+
+- text: "retiré des feuilles"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "retiré des feuilles"}
+
+- text: "Retrait de pieds sur othertarget par worker"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Retrait de pieds"}
+    - {label: DUKE_PARCEL, span: "othertarget"}
+    - {label: DUKE_WORKER, span: "worker"}
+
+- text: "Saisie d'intervention rognage"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "rognage"}
+
+- text: "Saisie d'interventions"
+  intent: record_intervention
+
+- text: "Saisie d'une opération"
+  intent: record_intervention
+
+- text: "Saisie une intervention"
+  intent: record_intervention
+
+- text: "Saisie une intervention stp"
+  intent: record_intervention
+
+- text: "Saisis une destratification sur les pieds morts"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "destratification"}
+    - {label: DUKE_PARCEL, span: "les pieds morts"}
+
+- text: "Sauvegarde d'une intervention"
+  intent: record_intervention
+
+- text: "semis"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "semis"}
+
+- text: "Semis sur le mais grain par Thierry et Fanélie avec le tracteur ferrari 18 et l'outil tracté arrière"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Semis"}
+    - {label: DUKE_PRODUCT, span: "mais grain"}
+    - {label: DUKE_WORKER, span: "Thierry"}
+    - {label: DUKE_WORKER, span: "Fanélie"}
+    - {label: DUKE_TOOL, span: "tracteur ferrari 18"}
+    - {label: DUKE_TOOL, span: "outil tracté arrière"}
+
+- text: "Sophie a fait le plein"
+  intent: record_intervention
+
+- text: "superposition"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "superposition"}
+
+- text: "Sylvie a suivi le troupeau pendant un paturage sur parcours"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "paturage"}
+    - {label: DUKE_PARCEL, span: "parcours"}
+    - {label: DUKE_WORKER, span: "Sylvie"}
+
+- text: "Taches administratives faites ce matin"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Taches administratives"}
+
+- text: "taille"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "taille"}
+
+- text: "Tamisage des pieds plats hier avec l'outil tracté"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Tamisage"}
+
+- text: "terrassement"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "terrassement"}
+
+- text: "terrasser"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "terrasser"}
+
+- text: "Thomas a enlevé le filet"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "enlevé le filet"}
+    - {label: DUKE_WORKER, span: "Thomas"}
+
+- text: "tirage des bois"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "tirage des bois"}
+
+- text: "Tirage des bois pendant 2 heures sur target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Tirage des bois"}
+    - {label: DUKE_QUANTITY, span: "2 heures"}
+    - {label: DUKE_PARCEL, span: "target"}
+
+- text: "Traite à 12h par Philippe"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Traite"}
+    - {label: DUKE_WORKER, span: "Philippe"}
+
+- text: "Traitement vétérinaire pour Marguerite"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Traitement vétérinaire"}
+
+- text: "Triage de cultures hier"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Triage de cultures"}
+
+- text: "Triage de plants sur bernessard 08"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Triage de plants"}
+    - {label: DUKE_PARCEL, span: "bernessard 08"}
+
+- text: "Vindange faite"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "Vindange"}
+
+- text: "worker a arraché des rangs sur target et target"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "arraché"}
+    - {label: DUKE_PARCEL, span: "target", nth: 0}
+    - {label: DUKE_PARCEL, span: "target", nth: 1}
+    - {label: DUKE_WORKER, span: "worker"}
+
+- text: "worker a complanté le 15 juillet"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "complanté"}
+    - {label: DUKE_WORKER, span: "worker"}
+
+- text: "worker a fait une intervention"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_WORKER, span: "worker"}
+
+- text: "worker a irrigué sur la target avec le tool"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "irrigué"}
+    - {label: DUKE_PARCEL, span: "target"}
+    - {label: DUKE_TOOL, span: "tool"}
+    - {label: DUKE_WORKER, span: "worker"}
+
+- text: "Worker a nettoyé l'habitat des vaches"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "nettoyé"}
+    - {label: DUKE_WORKER, span: "Worker"}
+
+- text: "worker a superposé"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "superposé"}
+    - {label: DUKE_WORKER, span: "worker"}

@@ -6,12 +6,12 @@ See [`REQUIREMENTS.md`](./REQUIREMENTS.md) and [`ARCHITECTURE.md`](./ARCHITECTUR
 
 ## Status
 
-MVP delivered through iteration 6 ; itération 7 ajoute l'infrastructure d'entraînement NER agricole (corpus annoté + synthétiseur + CLI + intégration pipeline).
+MVP delivered through iteration 8 (saisie d'intervention + Q&A + voix + clarify). Itérations 9 (stabilisation Ekylibre live) et 10 (NER agricole entraîné, F1 0.94) durcissent l'intégration — première intervention créée bout-en-bout en live le 2026-05-08.
 
 | Layer | Delivered |
 |---|---|
 | Foundations | FastAPI + WS transport, Alembic migrations, structured logs, Prometheus metrics, multi-tenant Postgres isolation primitive (`SET LOCAL search_path` + readonly tx) |
-| NLU | spaCy pipeline (`fr_core_news_lg` with blank-fr fallback), French temporal parser, `EntityRuler` from lexicon, rule-based intent classifier, golden corpus + accuracy gate |
+| NLU | spaCy pipeline (Duke-trained NER baked at `/app/models/duke-ner` with auto-detection, fallback to `fr_core_news_lg` then blank-fr), French temporal parser, `EntityRuler` from lexicon, rule-based intent classifier, golden corpus + accuracy gate |
 | LLM | `LLMRouter` Claude + Mistral with automatic fallback, streaming for Q&A, function-calling for intervention extraction, prompt caching |
 | Use cases | `InterventionRecorder` (POST /api/v2/interventions), `QueryAnswerer` (qa_stock + qa_history via Postgres direct read) |
 | Persistence | `conversation_session` / `conversation_turn` / `intervention_draft` / `audit_event` in Duke's own DB, RGPD retention job, hashed tenant/user identifiers |
@@ -19,7 +19,7 @@ MVP delivered through iteration 6 ; itération 7 ajoute l'infrastructure d'entra
 | Frontend | Vanilla JS chat widget (bubble + panel + draft card + bouton micro Web Speech API fr-FR) embedded in Ekylibre's `backend.html.haml` via `app/javascript/duke/` and `app/views/shared/_duke_widget.html.haml` |
 | Ekylibre side | `GET /api/v2/users/me` endpoint, `duke_reader` read-only Postgres role + Rake task, `Backend::DukeWidgetController#show` config endpoint |
 
-**Tests**: 104 passing (default suite) + 6 opt-in e2e against a running Ekylibre.
+**Tests**: 387 passing (default suite) + 6 opt-in e2e against a running Ekylibre + 1 opt-in NER training smoke.
 
 ## Bootstrap
 
@@ -69,6 +69,10 @@ uv run python -m duke.cli.retention purge
 # Database migrations
 uv run alembic upgrade head
 
+# Inspect the NER training corpus before training (label distribution,
+# span alignment, duplicates).
+uv run python -m duke.cli.corpus_stats
+
 # Train a custom Duke NER (writes a spaCy model to ./models/ner/duke-fr-v1).
 # Wire it in via DUKE_NER_MODEL_PATH=./models/ner/duke-fr-v1 — Duke loads the
 # trained model in place of SPACY_MODEL while keeping the EntityRuler overlay.
@@ -78,6 +82,51 @@ uv run python -m duke.cli.train_ner \
   --n-synth 800 --n-iter 30 \
   --output models/ner/duke-fr-v1
 ```
+
+### NER corpus enrichment
+
+The training corpus lives in `tests/fixtures/golden_phrases.yaml`. Each
+entry is a French phrase plus the entity spans the model should learn:
+
+```yaml
+- text: "j'ai pulvérisé 2L de Karaté Zeon sur la parcelle Bel Air ce matin"
+  intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pulvérisé"}
+    - {label: DUKE_QUANTITY, span: "2L"}
+    - {label: DUKE_PRODUCT, span: "Karaté Zeon"}
+    - {label: DUKE_PARCEL, span: "Bel Air"}
+```
+
+Conventions:
+
+- **`span`** is the literal substring as it appears in `text` (case +
+  accents must match). The converter resolves it to char offsets at load
+  time. If the same substring repeats, add `nth: 0|1|2…` to pick which
+  occurrence.
+- **Labels**: `DUKE_PRODUCT`, `DUKE_PROCEDURE`, `DUKE_PARCEL`,
+  `DUKE_QUANTITY`, `DUKE_WORKER` (operators, doers), `DUKE_TOOL`
+  (equipment / motorized vehicles). Add new ones consistently across
+  phrases or the model won't have enough signal to learn them.
+- **Dates and durations are NOT NER entities** — `src/duke/nlu/temporal.py`
+  parses them deterministically from French phrasing ("ce matin",
+  "pendant 2 heures", "à 14h30", "15/03/2024") into structured
+  `started_at` / `stopped_at` / `working_duration` and feeds the result
+  to the LLM via hints. Annotating them with NER labels would duplicate
+  signal without improving resolution. The 3 `DUKE_QUANTITY` annotations
+  in the corpus today cover physical quantities (`200kg`, `2L`) only.
+- **`entities` is optional** — `qa_history` / `out_of_scope` / `unknown`
+  phrases often have nothing to extract.
+- Run `uv run python -m duke.cli.corpus_stats` after each batch of edits;
+  it surfaces token-misaligned spans (the silent killer of NER training)
+  with concrete examples to fix.
+
+Sizing guidance: the bigger the corpus, the more useful the trained NER
+gets. ~50–100 hand-curated phrases per recurring user pattern is a
+healthy floor; the synthesizer adds another 800 templated examples on
+top. The Docker build bakes the trained model into the runtime image
+(see `docker/Dockerfile` trainer stage), so updating the corpus and
+rebuilding the image is the canonical way to ship a new NER.
 
 ## Tests
 
@@ -122,7 +171,9 @@ See `ARCHITECTURE.md` for the full design.
 | 6 | Frontend chat widget in Ekylibre backend | ✅ |
 | 7 | NER agricole — corpus annoté + synth + train CLI + load via `DUKE_NER_MODEL_PATH` | ✅ |
 | 8 | Saisie vocale + clarify — bouton micro Web Speech API (fr-FR), résolution d'ambiguïtés via `clarify` (textarea bascule, fiche replacée en place, draft re-extrait par Duke) | ✅ |
-| 9+ | Whisper STT serveur, multi-instance scaling, fonctions Ekylibre phase 2 | future |
+| 9 | Stabilisation Ekylibre live — `provider` envelope, payload à plat (Hash form), canonicalisation procédure via lexique, hydration `ProcedureRegistry` au 1ᵉʳ auth, mapping spec-aware (`reference_name` issu des slots Procedo), `description` = phrase utilisateur originale | ✅ |
+| 10 | NER agricole entraîné — corpus enrichi (267 phrases, 401 spans), 6 labels (+ DUKE_WORKER + DUKE_TOOL), CLI `train_ner` baked en stage Docker. F1 0.94 global, 1.00 sur PRODUCT, 0.97 sur PARCEL. Modèle auto-détecté à `/app/models/duke-ner` au runtime | ✅ |
+| 11+ | Whisper STT serveur, multi-instance scaling Redis, fonctions Ekylibre phase 2 (grand livre) | future |
 
 External-side dependencies (`ARCHITECTURE.md §10`): D1–D5 done, D6 (LLM API keys) is ops/secret management.
 

@@ -38,6 +38,8 @@ from duke.nlu.entity_ruler import (
     LABEL_PROCEDURE,
     LABEL_PRODUCT,
     LABEL_QUANTITY,
+    LABEL_TOOL,
+    LABEL_WORKER,
 )
 from duke.nlu.pipeline import load_nlp
 from duke.nlu.training import (
@@ -50,7 +52,14 @@ from duke.nlu.training.synth import merge_corpora
 
 log = structlog.get_logger(__name__)
 
-DUKE_LABELS = (LABEL_PRODUCT, LABEL_PROCEDURE, LABEL_PARCEL, LABEL_QUANTITY)
+DUKE_LABELS = (
+    LABEL_PRODUCT,
+    LABEL_PROCEDURE,
+    LABEL_PARCEL,
+    LABEL_QUANTITY,
+    LABEL_WORKER,
+    LABEL_TOOL,
+)
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -133,6 +142,15 @@ def main(argv: list[str] | None = None) -> int:
     # training proceeds (NER is built from scratch anyway) but lemmatizer / tagger
     # won't be available downstream. Document this in CI logs.
     nlp = load_nlp(args.base_model)
+    # Drop pipes Duke doesn't use. The lemmatizer in particular pulls in
+    # `spacy-lookups-data` at initialize time (E955), and we have no use
+    # for parser / morphologizer / attribute_ruler at runtime — we only
+    # need the tokenizer (always present) and our fresh NER. Removing
+    # them shaves ~150 MB from the saved pipeline too.
+    unused_pipes = ("parser", "tagger", "morphologizer", "attribute_ruler", "lemmatizer")
+    for pipe_name in unused_pipes:
+        if pipe_name in nlp.pipe_names:
+            nlp.remove_pipe(pipe_name)
     if "ner" in nlp.pipe_names:
         nlp.remove_pipe("ner")
     ner = nlp.add_pipe("ner", last=True)

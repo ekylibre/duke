@@ -14,6 +14,13 @@ LABEL_PRODUCT = "DUKE_PRODUCT"
 LABEL_PROCEDURE = "DUKE_PROCEDURE"
 LABEL_PARCEL = "DUKE_PARCEL"
 LABEL_QUANTITY = "DUKE_QUANTITY"
+# Operators (workers / doers) and equipment (tools). Dates and durations
+# stay outside the NER schema because `nlu/temporal.py` already extracts
+# them deterministically into structured datetime/timedelta fields and
+# feeds the LLM via hints — adding NER labels for them would duplicate
+# signal without improving the resolution path.
+LABEL_WORKER = "DUKE_WORKER"
+LABEL_TOOL = "DUKE_TOOL"
 
 
 def patterns_from_lexicon(lexicon: Lexicon, parcel_names: Iterable[str] = ()) -> list[dict]:

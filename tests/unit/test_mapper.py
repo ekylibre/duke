@@ -148,12 +148,32 @@ def test_working_periods_when_stopped_at_set() -> None:
     assert periods[0]["started_at"].startswith("2026-05-07T08:00:00")
 
 
-def test_no_working_periods_without_stopped_at() -> None:
+def test_synthesizes_stopped_at_when_missing() -> None:
+    """The interactor compares started_at/stopped_at unconditionally and
+    crashes on a nil stopped_at. When the LLM/temporal parser only pinned
+    a start, the mapper synthesizes a 1-hour fallback so Ekylibre always
+    receives a valid working_period."""
     draft = _full_draft()
-    draft = draft.model_copy(update={"stopped_at": None})
+    draft = draft.model_copy(update={"stopped_at": None, "working_duration": None})
     payload = intervention_draft_to_payload(draft)
-    assert "working_periods_attributes" not in payload
-    assert "stopped_at" not in payload
+    periods = payload["working_periods_attributes"]
+    assert len(periods) == 1
+    assert periods[0]["started_at"].startswith("2026-05-07T08:00:00")
+    # 1-hour default → stopped_at = 09:00
+    assert periods[0]["stopped_at"].startswith("2026-05-07T09:00:00")
+
+
+def test_uses_working_duration_when_stopped_at_missing() -> None:
+    """If the temporal parser surfaced a `working_duration`, prefer that
+    over the 1-hour default when synthesizing stopped_at."""
+    from datetime import timedelta
+
+    draft = _full_draft().model_copy(
+        update={"stopped_at": None, "working_duration": timedelta(hours=3)}
+    )
+    payload = intervention_draft_to_payload(draft)
+    periods = payload["working_periods_attributes"]
+    assert periods[0]["stopped_at"].startswith("2026-05-07T11:00:00")
 
 
 def test_missing_procedure_raises() -> None:

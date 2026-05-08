@@ -78,6 +78,11 @@ class NlpPipeline:
         self._parcel_names_provider = parcel_names_provider
         self._ruler_installed = False
 
+    # Well-known path where the Docker `trainer` stage bakes the trained NER.
+    # Used as a fallback when DUKE_NER_MODEL_PATH is unset/empty so the image
+    # ships with a working trained model out of the box.
+    _BAKED_NER_PATH = "/app/models/duke-ner"
+
     @classmethod
     def build(
         cls,
@@ -88,21 +93,34 @@ class NlpPipeline:
     ) -> NlpPipeline:
         """Build the pipeline.
 
-        When `ner_model_path` is provided and points to an existing directory,
-        the trained Duke NER is loaded; otherwise we fall back to `model_name`
-        (typically `fr_core_news_lg`).
+        Resolution order for the spaCy model to load:
+          1. `ner_model_path` (from Settings.duke_ner_model_path, typically
+             pointing at a dev model dir).
+          2. The baked-in Docker path `/app/models/duke-ner` if it exists
+             (works automatically in containers built with the trainer stage).
+          3. `model_name` (e.g. `fr_core_news_lg`); falls through to
+             `spacy.blank("fr")` if the package isn't installed.
         """
-        target = model_name
-        if ner_model_path:
-            from pathlib import Path
+        from pathlib import Path
 
-            if Path(ner_model_path).exists():
-                log.info("nlu.loading_trained_ner", path=ner_model_path)
-                target = ner_model_path
-            else:
+        target = model_name
+        candidates: list[tuple[str, str | None]] = [
+            ("explicit_path", ner_model_path),
+            ("baked_path", cls._BAKED_NER_PATH),
+        ]
+        for source, candidate in candidates:
+            if not candidate:
+                continue
+            if Path(candidate).exists():
+                log.info("nlu.loading_trained_ner", source=source, path=candidate)
+                target = candidate
+                break
+            if source == "explicit_path":
+                # Only warn on the explicit path — the baked path being
+                # missing is normal in dev / unit tests outside Docker.
                 log.warning(
                     "nlu.ner_model_path_missing",
-                    path=ner_model_path,
+                    path=candidate,
                     fallback=model_name,
                 )
         return cls(load_nlp(target), lexicon_repo, parcel_names_provider)

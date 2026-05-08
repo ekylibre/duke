@@ -10,6 +10,11 @@ __pycache__
 .env.*
 !.env.example
 tests/
+# The trainer Docker stage needs the golden corpus fixtures to bake the
+# NER model. Whitelist `tests/fixtures` only — the rest of `tests/` stays
+# excluded from the build context.
+!tests/fixtures
+!tests/fixtures/**
 docs/
 *.md
 !README.md
