@@ -49,11 +49,20 @@ class NluResult:
     temporal: TemporalExtraction
 
 
-def load_nlp(model_name: str) -> Language:
+def load_nlp(model_name_or_path: str) -> Language:
+    """Load a spaCy `Language` from a model name or an on-disk model directory.
+
+    `spacy.load` accepts either, so callers can pass `Settings.duke_ner_model_path`
+    (a trained Duke NER) or `Settings.spacy_model` (the base model name).
+    """
     try:
-        return spacy.load(model_name, disable=["parser"])
+        return spacy.load(model_name_or_path, disable=["parser"])
     except OSError:
-        log.warning("spacy.model_not_found", model=model_name, fallback="blank-fr")
+        log.warning(
+            "spacy.model_not_found",
+            model=model_name_or_path,
+            fallback="blank-fr",
+        )
         return spacy.blank("fr")
 
 
@@ -75,8 +84,28 @@ class NlpPipeline:
         model_name: str,
         lexicon_repo: LexiconRepository,
         parcel_names_provider=None,
+        ner_model_path: str | None = None,
     ) -> NlpPipeline:
-        return cls(load_nlp(model_name), lexicon_repo, parcel_names_provider)
+        """Build the pipeline.
+
+        When `ner_model_path` is provided and points to an existing directory,
+        the trained Duke NER is loaded; otherwise we fall back to `model_name`
+        (typically `fr_core_news_lg`).
+        """
+        target = model_name
+        if ner_model_path:
+            from pathlib import Path
+
+            if Path(ner_model_path).exists():
+                log.info("nlu.loading_trained_ner", path=ner_model_path)
+                target = ner_model_path
+            else:
+                log.warning(
+                    "nlu.ner_model_path_missing",
+                    path=ner_model_path,
+                    fallback=model_name,
+                )
+        return cls(load_nlp(target), lexicon_repo, parcel_names_provider)
 
     def install_entity_ruler(self, parcel_names: Iterable[str] = ()) -> None:
         patterns = patterns_from_lexicon(self._lexicon_repo.lexicon, parcel_names=parcel_names)

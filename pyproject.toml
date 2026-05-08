@@ -57,4 +57,5 @@ testpaths = ["tests"]
 markers = [
     "integration: tests requiring docker (testcontainers)",
     "ekylibre_real: opt-in e2e against a running Ekylibre dev container (set RUN_EKYLIBRE_E2E=1)",
+    "ner_training: opt-in NER training smoke test (set RUN_NER_TRAINING=1)",
 ]

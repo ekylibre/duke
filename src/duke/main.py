@@ -61,7 +61,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     lexicon_repo: LexiconRepository = InMemoryLexiconRepository(
         Lexicon(products=[], procedures=list(DEFAULT_PROCEDURES), units=list(DEFAULT_UNITS))
     )
-    pipeline = NlpPipeline.build(settings.spacy_model, lexicon_repo)
+    pipeline = NlpPipeline.build(
+        settings.spacy_model,
+        lexicon_repo,
+        ner_model_path=settings.duke_ner_model_path,
+    )
     pipeline.install_entity_ruler()
 
     primary, secondary = _build_llm_providers(settings)

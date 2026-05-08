@@ -6,7 +6,7 @@ See [`REQUIREMENTS.md`](./REQUIREMENTS.md) and [`ARCHITECTURE.md`](./ARCHITECTUR
 
 ## Status
 
-MVP delivered through iteration 6.
+MVP delivered through iteration 6 ; itération 7 ajoute l'infrastructure d'entraînement NER agricole (corpus annoté + synthétiseur + CLI + intégration pipeline).
 
 | Layer | Delivered |
 |---|---|
@@ -68,6 +68,15 @@ uv run python -m duke.cli.retention purge
 
 # Database migrations
 uv run alembic upgrade head
+
+# Train a custom Duke NER (writes a spaCy model to ./models/ner/duke-fr-v1).
+# Wire it in via DUKE_NER_MODEL_PATH=./models/ner/duke-fr-v1 — Duke loads the
+# trained model in place of SPACY_MODEL while keeping the EntityRuler overlay.
+uv run python -m duke.cli.train_ner \
+  --base-model fr_core_news_lg \
+  --corpus tests/fixtures/golden_phrases.yaml \
+  --n-synth 800 --n-iter 30 \
+  --output models/ner/duke-fr-v1
 ```
 
 ## Tests
@@ -82,6 +91,12 @@ Opt-in e2e against a running Ekylibre (see `tests/integration/README.md` for the
 
 ```bash
 RUN_EKYLIBRE_E2E=1 uv run pytest -m ekylibre_real
+```
+
+Opt-in NER training smoke test (forces blank-fr to keep the run lightweight):
+
+```bash
+RUN_NER_TRAINING=1 uv run pytest -m ner_training
 ```
 
 ## Architecture overview
@@ -105,7 +120,8 @@ See `ARCHITECTURE.md` for the full design.
 | 4 | Hardening (persistence, retention, rate limiting) | ✅ |
 | 5 | Real e2e (Ekylibre `/users/me` + `duke_reader` + opt-in test suite) | ✅ |
 | 6 | Frontend chat widget in Ekylibre backend | ✅ |
-| 7+ | Voice (Web Speech API), spaCy NER training, Whisper STT, multi-instance scaling | future |
+| 7 | NER agricole — corpus annoté + synth + train CLI + load via `DUKE_NER_MODEL_PATH` | ✅ |
+| 8+ | Voice (Web Speech API), Whisper STT, multi-instance scaling, fonctions Ekylibre phase 2 | future |
 
 External-side dependencies (`ARCHITECTURE.md §10`): D1–D5 done, D6 (LLM API keys) is ops/secret management.
 

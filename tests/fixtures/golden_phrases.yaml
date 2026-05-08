@@ -1,61 +1,116 @@
 # Duke NLU golden corpus.
 #
-# Each entry is a French sentence with the expected intent. Used by
-# tests/integration/test_golden_intents.py to enforce a minimum accuracy
-# in CI. Extend through user feedback (see ARCHITECTURE.md §9.2).
+# Each entry has:
+#   text     — the French sentence
+#   intent   — record_intervention | qa_stock | qa_history | out_of_scope | unknown
+#   entities — optional list of {label, span, nth?} where `span` is the literal
+#              substring of `text` and `nth` (default 0) selects which occurrence
+#              when the substring repeats. The converter resolves spans to
+#              character offsets at training time and validates token alignment.
 #
-# Intents: record_intervention | qa_stock | qa_history | out_of_scope | unknown
+# Labels: DUKE_PRODUCT | DUKE_PROCEDURE | DUKE_PARCEL | DUKE_QUANTITY
+#
+# Used by:
+#   - tests/integration/test_golden_intents.py (intent accuracy gate)
+#   - duke.cli.train_ner / duke.nlu.training.* (NER training + eval)
+#
+# Extend through user feedback (see ARCHITECTURE.md §9.2).
 
 - text: "j'ai pulvérisé 2L de Karaté Zeon sur la parcelle Bel Air ce matin pendant 2h"
   intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pulvérisé"}
+    - {label: DUKE_QUANTITY, span: "2L"}
+    - {label: DUKE_PRODUCT, span: "Karaté Zeon"}
+    - {label: DUKE_PARCEL, span: "Bel Air"}
 
 - text: "pulvérisation de Bouillie bordelaise sur Vigne du Bas hier après-midi"
   intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pulvérisation"}
+    - {label: DUKE_PRODUCT, span: "Bouillie bordelaise"}
+    - {label: DUKE_PARCEL, span: "Vigne du Bas"}
 
 - text: "j'ai semé 200kg de blé sur Pré du Moulin ce matin"
   intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "semé"}
+    - {label: DUKE_QUANTITY, span: "200kg"}
+    - {label: DUKE_PRODUCT, span: "blé"}
+    - {label: DUKE_PARCEL, span: "Pré du Moulin"}
 
 - text: "labour de la parcelle Cantemerle hier pendant 3 heures"
   intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "labour"}
+    - {label: DUKE_PARCEL, span: "Cantemerle"}
+    - {label: DUKE_QUANTITY, span: "3 heures"}
 
 - text: "saisie d'une intervention de fertilisation lundi"
   intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "fertilisation"}
 
 - text: "enregistre une vendange manuelle aujourd'hui"
   intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "vendange"}
 
 - text: "j'ai traité avec Pulvébois sur Les Coteaux il y a une semaine"
   intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "traité"}
+    - {label: DUKE_PRODUCT, span: "Pulvébois"}
+    - {label: DUKE_PARCEL, span: "Les Coteaux"}
 
 - text: "j'ai fauché Le Grand Pré ce matin pendant 1h30"
   intent: record_intervention
+  entities:
+    - {label: DUKE_PROCEDURE, span: "fauché"}
+    - {label: DUKE_PARCEL, span: "Le Grand Pré"}
 
 - text: "combien de Karaté Zeon me reste-t-il en stock ?"
   intent: qa_stock
+  entities:
+    - {label: DUKE_PRODUCT, span: "Karaté Zeon"}
 
 - text: "quelle quantité de Bouillie bordelaise il me reste ?"
   intent: qa_stock
+  entities:
+    - {label: DUKE_PRODUCT, span: "Bouillie bordelaise"}
 
 - text: "stock actuel de glyphosate"
   intent: qa_stock
+  entities:
+    - {label: DUKE_PRODUCT, span: "glyphosate"}
 
 - text: "il me reste combien de fioul ?"
   intent: qa_stock
+  entities:
+    - {label: DUKE_PRODUCT, span: "fioul"}
 
 - text: "quantité disponible de Roundup"
   intent: qa_stock
+  entities:
+    - {label: DUKE_PRODUCT, span: "Roundup"}
 
 - text: "quelles parcelles ai-je traitées cette semaine ?"
   intent: qa_history
+  entities:
+    - {label: DUKE_PROCEDURE, span: "traitées"}
 
 - text: "liste mes interventions de ce mois"
   intent: qa_history
 
 - text: "historique des interventions sur Bel Air"
   intent: qa_history
+  entities:
+    - {label: DUKE_PARCEL, span: "Bel Air"}
 
 - text: "montre-moi les dernières pulvérisations"
   intent: qa_history
+  entities:
+    - {label: DUKE_PROCEDURE, span: "pulvérisations"}
 
 - text: "qu'est-ce que j'ai fait hier ?"
   intent: qa_history

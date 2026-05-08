@@ -217,3 +217,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 tests/integration/.env.ekylibre_real
+
+# Trained spaCy NER artifacts (built by duke.cli.train_ner)
+models/

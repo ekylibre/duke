@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     llm_budget_tokens_per_session: int = 50000
 
     spacy_model: str = "fr_core_news_lg"
+    # Path to a Duke-trained spaCy model produced by `duke.cli.train_ner`. When
+    # set, this directory is loaded instead of `spacy_model` — it carries the
+    # custom DUKE_* NER labels. Empty/None falls back to the base model.
+    duke_ner_model_path: str | None = None
 
     hash_secret: str = "change-me-in-prod"
     retention_days_turn_text: int = 90

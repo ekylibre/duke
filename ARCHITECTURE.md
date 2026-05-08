@@ -282,8 +282,9 @@ flowchart TD
 
 **Roadmap NLU** (acté en Q3) :
 1. **MVP** : `fr_core_news_lg` + EntityRuler dynamique alimenté par le lexique + composant temporel FR custom + intent par règles.
-2. **Phase 2** : `fr_dep_news_trf` + NER agricole entraîné sur le golden set (cf. §8).
-3. La pipeline spaCy est versionnée (`Settings.SPACY_MODEL`) et chargée à la création du service — bascule sans changement de code.
+2. **Itération 7** : infrastructure d'entraînement NER agricole — corpus golden annoté, synthétiseur templates × lexique, CLI `duke.cli.train_ner` ; le modèle entraîné est chargé via `Settings.duke_ner_model_path` à la place du base model. EntityRuler reste en overlay (priorité aux hits lexique exacts pour la résolution d'ID).
+3. **Phase 2** : bascule `fr_dep_news_trf` (transformer) une fois le corpus enrichi suffisamment par retours utilisateurs (cf. §9.2).
+4. La pipeline spaCy est versionnée (`Settings.spacy_model` + `Settings.duke_ner_model_path`) et chargée à la création du service — bascule sans changement de code.
 
 **Composants** :
 - **EntityRuler** : patterns générés à chaud depuis `LexiconRepository` (produits, procédures, unités, cultures) + depuis `EkylibreReadDb` pour les noms propres du tenant (parcelles, activités, équipements). Reconstruit à l'auth de session ; rafraîchi toutes les 5 min.
@@ -671,8 +672,9 @@ Cas explicites en CI :
 | 4 | Durcissement | `ConversationRepository`, retention RGPD, rate limiting per-session |
 | 5 | E2E réel | `EkylibreReadDb` aligné sur le vrai schéma, `duke_reader` provisionné, suite e2e opt-in (`RUN_EKYLIBRE_E2E=1`) |
 | 6 | Frontend | Widget JS dans Ekylibre (`app/javascript/duke/`), partial HAML, `Backend::DukeWidgetController#show` |
+| 7 | NER agricole | Corpus golden annoté (entités), synthétiseur déterministe, CLI `duke.cli.train_ner` (train + eval P/R/F1), pipeline charge le modèle via `DUKE_NER_MODEL_PATH` ; EntityRuler conservé en overlay |
 
-**Couverture tests** : 104 tests par défaut (unit + integration testcontainers) + 6 e2e opt-in contre Ekylibre tournant.
+**Couverture tests** : 117 tests par défaut (unit + integration testcontainers) + 6 e2e opt-in contre Ekylibre tournant + 1 smoke training opt-in.
 
 ## 12. Pistes pour la suite
 
