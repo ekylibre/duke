@@ -1,0 +1,30 @@
+# Local HTTPS reverse proxy for Duke + Ekylibre dev.
+#
+# Why: browser mic APIs (Web Speech, MediaDevices, MediaRecorder) require
+# a secure context (HTTPS or localhost). Accessing Ekylibre via plain HTTP
+# on a LAN address silently disables the mic button in Firefox and refuses
+# permission in Chrome.
+#
+# Run from this directory:
+#   sudo caddy run                      # dev (foreground, logs to terminal)
+#   sudo caddy start && sudo caddy stop # background
+#
+# `sudo` is required because Caddy binds port 443. Alternative without sudo:
+#   sudo setcap 'cap_net_bind_service=+ep' "$(which caddy)"
+#
+# First run: Caddy generates a local CA and installs it in the system + browser
+# trust stores (Firefox needs `sudo apt install libnss3-tools` for this to
+# work). After that, https://duke.test and https://ekylibre.test are trusted.
+
+{
+    # Use Caddy's internal CA instead of Let's Encrypt for `.test` domains.
+    local_certs
+}
+
+duke.test {
+    reverse_proxy localhost:8000
+}
+
+ekylibre.test {
+    reverse_proxy localhost:3000
+}

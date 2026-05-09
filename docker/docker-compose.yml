@@ -3,6 +3,12 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        # Build-time switch. Set `INSTALL_STT=true` in the shell running
+        # `docker compose build` to bake faster-whisper into the image
+        # (~250 MB extra). Runtime activation is a separate concern —
+        # set `ENABLE_SERVER_STT=true` in the container env (`.env`).
+        INSTALL_STT: "${INSTALL_STT:-false}"
     container_name: duke-api
     env_file:
       - ../.env
@@ -11,6 +17,12 @@ services:
     depends_on:
       postgres-duke:
         condition: service_healthy
+    volumes:
+      # Persist the faster-whisper model weights (HuggingFace Hub cache)
+      # across container rebuilds — without this the ~150 MB download fires
+      # on every `docker compose up` after a build that invalidates the
+      # venv layer.
+      - whisper-cache:/home/duke/.cache/huggingface
     networks:
       - duke
       - ekylibre
@@ -38,6 +50,7 @@ services:
 
 volumes:
   postgres-duke-data:
+  whisper-cache:
 
 networks:
   duke:

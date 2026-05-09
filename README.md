@@ -6,7 +6,7 @@ See [`REQUIREMENTS.md`](./REQUIREMENTS.md) and [`ARCHITECTURE.md`](./ARCHITECTUR
 
 ## Status
 
-MVP delivered through iteration 8 (saisie d'intervention + Q&A + voix + clarify). Itérations 9 (stabilisation Ekylibre live) et 10 (NER agricole entraîné, F1 0.94) durcissent l'intégration — première intervention créée bout-en-bout en live le 2026-05-08.
+MVP delivered through iteration 8 (saisie d'intervention + Q&A + voix + clarify). Itérations 9 (stabilisation Ekylibre live) et 10 (NER agricole entraîné, F1 0.94) durcissent l'intégration — première intervention créée bout-en-bout en live le 2026-05-08. Itération 11 (Whisper STT serveur) ajoute un fallback `POST /api/v1/stt/transcribe` (faster-whisper) pour les navigateurs sans Web Speech API (Firefox, certains contextes mobile).
 
 | Layer | Delivered |
 |---|---|
@@ -19,7 +19,7 @@ MVP delivered through iteration 8 (saisie d'intervention + Q&A + voix + clarify)
 | Frontend | Vanilla JS chat widget (bubble + panel + draft card + bouton micro Web Speech API fr-FR) embedded in Ekylibre's `backend.html.haml` via `app/javascript/duke/` and `app/views/shared/_duke_widget.html.haml` |
 | Ekylibre side | `GET /api/v2/users/me` endpoint, `duke_reader` read-only Postgres role + Rake task, `Backend::DukeWidgetController#show` config endpoint |
 
-**Tests**: 387 passing (default suite) + 6 opt-in e2e against a running Ekylibre + 1 opt-in NER training smoke.
+**Tests**: 406 collected by default (unit + integration testcontainers) + 6 opt-in e2e against a running Ekylibre + 1 opt-in NER training smoke + 1 opt-in real-Whisper smoke (`RUN_STT_SMOKE=1`).
 
 ## Bootstrap
 
@@ -37,11 +37,26 @@ $EDITOR .env  # set EKYLIBRE_DB_DSN, DUKE_DB_DSN, ANTHROPIC_API_KEY, HASH_SECRET
 docker compose -f docker/docker-compose.yml up -d
 ```
 
+To bake the Whisper STT backend into the image (adds ~250 MB for
+faster-whisper + ctranslate2 + onnxruntime), set `INSTALL_STT=true` at
+build time *and* `ENABLE_SERVER_STT=true` at runtime — they're two
+distinct toggles (image content vs. feature flag):
+
+```bash
+INSTALL_STT=true docker compose -f docker/docker-compose.yml build duke-api
+docker compose -f docker/docker-compose.yml up -d
+```
+
+Model weights (~150 MB for `small`) download on first transcription and
+persist in the `whisper-cache` named volume mounted at
+`/home/duke/.cache/huggingface`, so subsequent rebuilds reuse them.
+
 Endpoints:
 - `GET /healthz` — liveness
 - `GET /readyz` — readiness (Duke DB + Ekylibre DB)
 - `GET /metrics` — Prometheus
 - `WS /ws` — chat WebSocket entry point
+- `POST /api/v1/stt/transcribe` — opt-in Whisper fallback (multipart `audio` + `Authorization: simple-token <email> <token>` + `X-Tenant: <tenant>`). Returns `{"text": "..."}`. Disabled (503) unless `ENABLE_SERVER_STT=true`; backend deps via `uv sync --extra stt`.
 
 ### Ekylibre side (in `/home/djoulin/projects/ekylibre`)
 
@@ -59,6 +74,92 @@ services:
       - DUKE_WS_URL=ws://localhost:8000/ws
       - ELEVATOR=header   # so Duke can reach a tenant via X-Tenant header
 ```
+
+### Local HTTPS for voice / STT testing
+
+The browser mic APIs (`navigator.mediaDevices`, Web Speech,
+`MediaRecorder`) require a [secure context](https://developer.mozilla.org/docs/Web/Security/Secure_Contexts)
+— either `localhost` or HTTPS. Accessing Ekylibre via an IP or LAN
+hostname over plain HTTP silently hides the mic button in Firefox and
+refuses mic permission in Chrome.
+
+#### 1. Install a TLS-terminating dev proxy
+
+Two interchangeable tools — pick whichever your machine supports:
+
+| Tool | When to pick | Install |
+|---|---|---|
+| **Caddy** *(recommended, works everywhere)* | Default. Single static Go binary, no glibc dependency. Reverse-proxies `duke.test` + `ekylibre.test`, generates a local CA on first run and pushes it into both system and Firefox trust stores. | apt repo (see below) |
+| [slim.sh](https://slim.sh) | Nicer CLI, but the release binary requires **glibc ≥ 2.34**. Won't run on Ubuntu 20.04 / Debian 11. | `curl -sL https://slim.sh/install.sh \| sh` |
+
+**Caddy** (Debian/Ubuntu):
+
+```bash
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https libnss3-tools
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+  | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+  | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update && sudo apt install -y caddy
+```
+
+`libnss3-tools` provides `certutil`, which Caddy calls to install its CA
+into Firefox's separate NSS trust store (Chrome uses the system store
+directly, so it doesn't need this — but installing it doesn't cost
+anything).
+
+#### 2. Map the dev domains to localhost
+
+```bash
+echo "127.0.0.1 duke.test ekylibre.test" | sudo tee -a /etc/hosts
+```
+
+#### 3. Start the proxy
+
+This repo ships both a `Caddyfile` (proxies both projects in a single
+process) and a `.slim.yaml` (Duke-only; Ekylibre has its own).
+
+```bash
+# Caddy — from this directory, binds :443 (sudo required)
+cd ~/projects/duke
+sudo caddy run
+
+# OR slim — one process per project
+cd ~/projects/duke    && slim up
+cd ~/projects/ekylibre && slim up
+```
+
+First run, Caddy emits `certificate authority is now trusted` once it
+finishes installing the CA. If Firefox was already running, restart it
+— it only reads NSS at startup. Verify:
+
+```bash
+curl -sI https://duke.test/healthz       # HTTP/2 200
+curl -sI https://ekylibre.test/          # whatever Rails returns
+```
+
+#### 4. Wire Ekylibre to the HTTPS Duke
+
+In Ekylibre's compose, point Rails at the HTTPS URLs and enable the
+server STT fallback:
+
+```yaml
+services:
+  app:
+    environment:
+      - DUKE_WS_URL=wss://duke.test/ws
+      - DUKE_HTTP_URL=https://duke.test          # used to derive stt_url
+      - DUKE_STT_SERVER_ENABLED=true             # exposes the mic fallback
+      - ELEVATOR=header
+```
+
+Restart Rails (`docker compose restart app`) and rebuild the JS bundle
+if your asset pipeline doesn't auto-reload. Open `https://ekylibre.test`
+in Firefox: the mic button appears. In Chrome, the permission prompt
+resolves to "allow".
+
+WebSocket upgrades (`wss://duke.test/ws` → `ws://localhost:8000/ws`)
+are handled transparently by both proxies — no extra config.
 
 ### CLI tools
 
@@ -131,7 +232,7 @@ rebuilding the image is the canonical way to ship a new NER.
 ## Tests
 
 ```bash
-uv run pytest                    # 104 tests (unit + integration with testcontainers)
+uv run pytest                    # 406 tests (unit + integration with testcontainers)
 uv run pytest -m integration     # only the docker-backed subset
 uv run ruff check                # lint
 ```
@@ -146,6 +247,12 @@ Opt-in NER training smoke test (forces blank-fr to keep the run lightweight):
 
 ```bash
 RUN_NER_TRAINING=1 uv run pytest -m ner_training
+```
+
+Opt-in real Whisper smoke test (downloads a small faster-whisper model on first run):
+
+```bash
+RUN_STT_SMOKE=1 uv run pytest -m stt_smoke
 ```
 
 ## Architecture overview
@@ -173,7 +280,8 @@ See `ARCHITECTURE.md` for the full design.
 | 8 | Saisie vocale + clarify — bouton micro Web Speech API (fr-FR), résolution d'ambiguïtés via `clarify` (textarea bascule, fiche replacée en place, draft re-extrait par Duke) | ✅ |
 | 9 | Stabilisation Ekylibre live — `provider` envelope, payload à plat (Hash form), canonicalisation procédure via lexique, hydration `ProcedureRegistry` au 1ᵉʳ auth, mapping spec-aware (`reference_name` issu des slots Procedo), `description` = phrase utilisateur originale | ✅ |
 | 10 | NER agricole entraîné — corpus enrichi (267 phrases, 401 spans), 6 labels (+ DUKE_WORKER + DUKE_TOOL), CLI `train_ner` baked en stage Docker. F1 0.94 global, 1.00 sur PRODUCT, 0.97 sur PARCEL. Modèle auto-détecté à `/app/models/duke-ner` au runtime | ✅ |
-| 11+ | Whisper STT serveur, multi-instance scaling Redis, fonctions Ekylibre phase 2 (grand livre) | future |
+| 11 | Whisper STT serveur — endpoint `POST /api/v1/stt/transcribe` (faster-whisper, lazy-load, auth `simple-token` + `X-Tenant`), opt-in via `ENABLE_SERVER_STT=true`. Widget bascule sur `MediaRecorder` + POST quand Web Speech API absent (Firefox, certains mobile) ; transcript injecté dans le textarea, le pipeline NLU n'a aucun chemin spécifique au STT | ✅ |
+| 12+ | Multi-instance scaling Redis, fonctions Ekylibre phase 2 (grand livre) | future |
 
 External-side dependencies (`ARCHITECTURE.md §10`): D1–D5 done, D6 (LLM API keys) is ops/secret management.
 
@@ -181,10 +289,11 @@ External-side dependencies (`ARCHITECTURE.md §10`): D1–D5 done, D6 (LLM API k
 
 ```
 src/duke/
-├── transport/         # WS server + Pydantic message schemas
+├── transport/         # WS server + STT HTTP route + Pydantic message schemas
 ├── application/       # Orchestrator, InterventionRecorder, QueryAnswerer
 ├── nlu/               # spaCy pipeline, intent classifier, temporal parser
 │   └── llm/           # LLMProvider Protocol + Claude / Mistral / Router
+├── stt/               # WhisperService (faster-whisper, lazy-load, async wrapper)
 ├── domain/            # Pure Pydantic models (Intent, InterventionDraft, ...)
 ├── integration/
 │   ├── ekylibre/      # api_client, read_db, lexicon_repo, mappers

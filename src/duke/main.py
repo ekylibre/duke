@@ -30,6 +30,8 @@ from duke.nlu.llm.router import LLMRouter
 from duke.nlu.pipeline import NlpPipeline
 from duke.observability.logging import RequestContextMiddleware, configure_logging
 from duke.observability.metrics import render_metrics
+from duke.stt import WhisperService
+from duke.transport.stt_routes import router as stt_router
 from duke.transport.ws_server import ws_endpoint
 
 log = structlog.get_logger(__name__)
@@ -99,6 +101,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # using the user's session credentials. The static DEFAULT_PROCEDURES
     # acts as a fallback while it's empty.
     app.state.procedure_registry = ProcedureRegistry()
+    # Whisper STT service: always constructed (cheap), but the model only
+    # loads on the first transcription request. The route gates on
+    # `settings.enable_server_stt` and returns 503 when disabled.
+    app.state.whisper_service = WhisperService(
+        model_name=settings.whisper_model,
+        device=settings.whisper_device,
+        compute_type=settings.whisper_compute_type,
+        language=settings.whisper_language,
+        cache_dir=settings.whisper_cache_dir or None,
+    )
 
     log.info(
         "startup.ready",
@@ -184,9 +196,11 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.allowed_ws_origins or ["*"],
         allow_credentials=False,
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
+
+    app.include_router(stt_router)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

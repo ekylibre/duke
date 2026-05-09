@@ -2,6 +2,13 @@
 
 FROM python:3.12-slim AS builder
 
+# Build-time toggle for the server-side Whisper backend. Pulls
+# faster-whisper + ctranslate2 + onnxruntime (~250 MB) into the venv —
+# off by default to keep the image slim. Flip with `--build-arg INSTALL_STT=true`
+# (or via the `INSTALL_STT` env var picked up by docker-compose).
+# Runtime activation also requires `ENABLE_SERVER_STT=true`.
+ARG INSTALL_STT=false
+
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
@@ -20,7 +27,11 @@ WORKDIR /app
 COPY pyproject.toml uv.lock LICENSE README.md ./
 COPY src ./src
 
-RUN uv sync --no-dev --frozen
+RUN if [ "$INSTALL_STT" = "true" ]; then \
+        uv sync --no-dev --frozen --extra stt; \
+    else \
+        uv sync --no-dev --frozen; \
+    fi
 
 
 # Trainer stage: download fr_core_news_lg and run the Duke NER training CLI
@@ -78,7 +89,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system duke \
-    && useradd --system --gid duke --create-home --home-dir /home/duke duke
+    && useradd --system --gid duke --create-home --home-dir /home/duke duke \
+    && install -d -o duke -g duke /home/duke/.cache/huggingface
 
 WORKDIR /app
 

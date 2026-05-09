@@ -52,6 +52,26 @@ class Settings(BaseSettings):
     hash_secret: str = "change-me-in-prod"
     retention_days_turn_text: int = 90
 
+    # Server-side STT (Whisper) — opt-in fallback for browsers without
+    # working Web Speech API (Firefox, some mobile contexts). When disabled,
+    # the /api/v1/stt/transcribe endpoint returns 503.
+    enable_server_stt: bool = False
+    # faster-whisper model identifier. `small` (~480 MB) is a good fr-FR
+    # tradeoff on CPU; bump to `medium` if quality is insufficient and you
+    # have GPU. Loaded lazily on first transcription request.
+    whisper_model: str = "small"
+    # `cpu` (default) | `cuda` | `auto`. `cuda` requires the matching CUDA
+    # libraries on the host and a `compute_type` like `float16`.
+    whisper_device: str = "cpu"
+    # `int8` is a good CPU default (smaller memory + fast); `float16` for GPU.
+    whisper_compute_type: str = "int8"
+    whisper_language: str = "fr"
+    # Reject uploads larger than this (bytes). 10 MB ≈ 5 minutes of WebM/Opus
+    # at typical browser bitrates — generous for a single utterance.
+    stt_max_audio_bytes: int = 10 * 1024 * 1024
+    # Optional cache dir override for the model weights (HF cache otherwise).
+    whisper_cache_dir: str | None = None
+
     @field_validator("allowed_ws_origins", mode="before")
     @classmethod
     def _split_csv(cls, v: object) -> object:

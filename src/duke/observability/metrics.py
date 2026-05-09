@@ -19,6 +19,12 @@ errors_total = Counter(
     labelnames=("code",),
 )
 
+stt_requests_total = Counter(
+    "duke_stt_requests_total",
+    "Server-side STT transcription requests, by outcome.",
+    labelnames=("outcome",),
+)
+
 
 def render_metrics() -> tuple[bytes, str]:
     return generate_latest(REGISTRY), CONTENT_TYPE_LATEST

@@ -1,0 +1,4 @@
+services:
+  - domain: duke
+    port: 8000
+log_mode: minimal
