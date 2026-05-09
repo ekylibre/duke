@@ -161,6 +161,89 @@ resolves to "allow".
 WebSocket upgrades (`wss://duke.test/ws` → `ws://localhost:8000/ws`)
 are handled transparently by both proxies — no extra config.
 
+#### slim — additional setup steps
+
+The Caddy recipe above almost works for slim too, but a few things differ:
+
+- **glibc ≥ 2.34** required by the release binary. Ubuntu 22.04 / Debian 12
+  are fine; Ubuntu 20.04 / Debian 11 are not — use Caddy there.
+- **First run needs sudo** for two distinct things; if slim is launched
+  from a non-interactive shell, both fail silently:
+  - `iptables` NAT chain `SLIM` redirecting `80→10080` and `443→10443`
+    (slim's daemon listens on non-privileged ports).
+  - `/etc/hosts` editing for each new domain in `.slim.yaml`.
+  Once both are in place, subsequent `slim up` runs don't need sudo.
+- **Per-domain TLS certs are generated lazily**. If `slim doctor` reports
+  `Cert: duke.test not found` after `slim up`, force generation with
+  `slim start duke --port 8000 --wait`.
+- **Firefox NSS isn't auto-populated** the way Caddy does it. Push the
+  slim CA into each Firefox profile by hand:
+  ```bash
+  sudo apt install -y libnss3-tools
+  for db in ~/.mozilla/firefox/*.default*/; do
+    certutil -A -n "slim CA" -t "C,," -i ~/.slim/ca/rootCA.pem -d "sql:$db"
+  done
+  # Restart Firefox — NSS is only read at startup.
+  ```
+  The system store (Chrome, `curl`) is handled by slim's installer
+  (`/etc/ssl/certs/slim.pem` symlink + `update-ca-certificates`).
+- **`slim doctor`** is the single best diagnostic when an HTTPS request to
+  a `.test` domain fails — missing cert, missing `/etc/hosts` entry,
+  port-forwarding gap, untrusted CA, all surfaced in one shot.
+
+The repo's `.slim.yaml` is intentionally minimal:
+
+```yaml
+services:
+  - domain: duke
+    port: 8000
+log_mode: minimal
+```
+
+### Topology: dev (slim) vs future prod
+
+The TLS terminator is the only thing that meaningfully differs between local
+dev and the eventual prod deployment — Duke itself, the auth model, and the
+data path are identical.
+
+```
+            ┌─────────┐
+            │ Browser │
+            └────┬────┘
+                 │ HTTPS / WSS
+                 ▼
+       ┌─────────────────────┐
+       │   TLS terminator    │   ← differs between dev and prod
+       └──────────┬──────────┘
+                  │ HTTP / WS
+                  ▼
+            ┌──────────┐
+            │   Duke   │
+            └─────┬────┘
+                  │
+        ┌─────────┼─────────┐
+        ▼         ▼         ▼
+   Ekylibre   Ekylibre    Duke
+   REST API   PG (RO,     PG
+              duke_reader)
+```
+
+|                  | DEV (this machine)                            | PROD (future)                            |
+|---|---|---|
+| TLS terminator   | slim daemon (or Caddy)                        | managed LB (nginx / Caddy / cloud)       |
+| Cert             | slim local CA                                 | public CA (Let's Encrypt / ACM)          |
+| Cert trust       | `/etc/ssl/certs` + Firefox NSS                | native browser trust (no setup)          |
+| Hostname binding | `/etc/hosts` + slim iptables NAT `443→10443`  | DNS A-record per tenant (or wildcard)    |
+| Duke runtime     | 1 uvicorn (docker compose)                    | N pods, sticky on WS connection          |
+| Ekylibre API     | `http://app:3000` over the docker network     | `https://api…` over the private VPC      |
+| Ekylibre PG      | asyncpg `:5431` as `duke_reader`              | asyncpg → read replica as `duke_reader`  |
+| Duke PG          | postgres `:5433` (docker volume)              | managed Postgres                         |
+
+Take-away: Duke's request handling, NLU, persistence, and Ekylibre integration
+have no "dev mode" / "prod mode" — only the edge layer changes. Everything
+documented in this README about reaching Duke (auth header, multi-tenant
+header, WS message envelope, STT fallback) is identical in both topologies.
+
 ### CLI tools
 
 ```bash

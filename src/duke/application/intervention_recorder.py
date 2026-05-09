@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import structlog
@@ -110,6 +111,18 @@ def _build_draft(raw: dict[str, Any], nlu: NluResult, text: str) -> Intervention
     started_at = _coerce_dt(raw.get("started_at")) or nlu.temporal.started_at
     stopped_at = _coerce_dt(raw.get("stopped_at")) or nlu.temporal.stopped_at
 
+    # Default the start date to "now" when the user didn't specify one.
+    # Mirrors typical ERP form behaviour (date pre-filled to today). Users
+    # who meant a different day will mention it in the phrase ("hier", "la
+    # semaine dernière") and the temporal parser will pick it up; or they
+    # can adjust in Ekylibre after the draft is recorded.
+    # Use Europe/Paris to match the timezone the temporal parser uses when
+    # it does fill `started_at` itself, so the draft never mixes tz-aware
+    # and tz-naive datetimes. Done early so the LLM-ambiguities filter
+    # below sees the resolved value.
+    if started_at is None:
+        started_at = datetime.now(tz=ZoneInfo("Europe/Paris"))
+
     duration: timedelta | None = nlu.temporal.working_duration
     secs = raw.get("working_duration_seconds")
     if isinstance(secs, int) and secs > 0:
@@ -135,38 +148,55 @@ def _build_draft(raw: dict[str, Any], nlu: NluResult, text: str) -> Intervention
     unresolved_target_names = {
         t.raw_name for t in targets if t.resolved_id is None and t.raw_name
     }
+    # Drop LLM ambiguities that target a field we've already filled in code.
+    # The LLM is sometimes overzealous (e.g. asks "à quelle heure ?" even
+    # when the temporal parser produced a default time); without this filter
+    # the user stays blocked behind a question we don't actually need.
+    filled_fields: set[str] = set()
+    if started_at is not None:
+        filled_fields.add("started_at")
+    if stopped_at is not None:
+        filled_fields.add("stopped_at")
     ambiguities = [
         _ambiguity_from_dict(a)
         for a in (raw.get("ambiguities") or [])
         if (a.get("raw_value") or "") not in unresolved_target_names
+        and a.get("field") not in filled_fields
     ]
-
-    if started_at is None:
-        ambiguities.append(
-            Ambiguity(
-                field="started_at",
-                raw_value=text,
-                question="Quelle est la date de l'intervention ?",
-            )
-        )
-    if not targets:
+    # One consolidated multi-select ambiguity covers both cases:
+    #   - no targets at all  → user picks the parcels from scratch
+    #   - some raw targets unresolved → user picks all parcels in one shot,
+    #     including any already-resolved ones they want to keep. A single
+    #     prompt avoids the per-target ping-pong loop where the user has to
+    #     pick once for each unresolved name.
+    if not targets or any(t.resolved_id is None for t in targets):
         ambiguities.append(
             Ambiguity(
                 field="targets",
                 raw_value=text,
-                question="Sur quelle parcelle as-tu réalisé l'intervention ?",
+                question="Sur quelle(s) parcelle(s) as-tu réalisé l'intervention ?",
+                multi=True,
             )
         )
-    if any(t.resolved_id is None for t in targets):
-        for t in targets:
-            if t.resolved_id is None:
-                ambiguities.append(
-                    Ambiguity(
-                        field="targets",
-                        raw_value=t.raw_name,
-                        question=f"Quelle parcelle correspond à « {t.raw_name} » ?",
-                    )
+
+    # Per-input single-select for any input the LLM/NLU couldn't tie to a
+    # tenant product. Each prompt keeps the input's raw_name and quantity;
+    # the option pick fills `resolved_product_id`/`resolved_product_name`.
+    # Without this the mapper would crash at confirm time on the unresolved
+    # `product_id`.
+    for inp in inputs_:
+        if inp.resolved_product_id is None and inp.raw_name:
+            qty = ""
+            if inp.quantity_value is not None:
+                qty = f"{inp.quantity_value} {inp.quantity_unit or ''}".strip()
+                qty = f" ({qty})" if qty else ""
+            ambiguities.append(
+                Ambiguity(
+                    field="inputs",
+                    raw_value=inp.raw_name,
+                    question=f"Quel produit correspond à « {inp.raw_name} »{qty} ?",
                 )
+            )
 
     confidence = float(raw.get("confidence", 0.0) or 0.0)
 
@@ -252,9 +282,14 @@ def _input_from_dict(i: dict[str, Any]) -> ResolvedInput:
 
 
 def _ambiguity_from_dict(a: dict[str, Any]) -> Ambiguity:
+    # `or` (rather than `dict.get` defaults) is deliberate: the LLM
+    # sometimes returns explicit `null` for these fields, which `get`
+    # would surface as `None` and Pydantic would reject for str fields.
     return Ambiguity(
-        field=a.get("field", "unknown"),
-        raw_value=a.get("raw_value", ""),
+        field=a.get("field") or "unknown",
+        raw_value=a.get("raw_value") or "",
         options=list(a.get("options") or []),
-        question=a.get("question", "Peux-tu préciser ?"),
+        question=a.get("question") or "Peux-tu préciser ?",
+        multi=bool(a.get("multi") or False),
+        selected=list(a.get("selected") or []),
     )

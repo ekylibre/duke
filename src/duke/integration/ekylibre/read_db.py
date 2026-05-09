@@ -49,7 +49,12 @@ class EkylibreReadDb:
         quoted = _quote_ident(tenant_schema)
 
         async with self._pool.acquire() as conn, conn.transaction(readonly=True):
-            await conn.execute(f"SET LOCAL search_path TO {quoted}, lexicon, public")
+            # `postgis` is in the search_path so the `ST_*` functions used by
+            # `sum_parcel_area_in_hectare` resolve without explicit schema
+            # qualification — mirrors Apartment's `persistent_schemas`.
+            await conn.execute(
+                f"SET LOCAL search_path TO {quoted}, postgis, lexicon, public"
+            )
             yield ScopedReader(conn)
 
 
@@ -83,6 +88,47 @@ class ScopedReader:
         rows = await self._conn.fetch(
             "SELECT id, name, variant_id FROM products "
             "WHERE dead_at IS NULL "
+            "ORDER BY name LIMIT $1",
+            limit,
+        )
+        return [dict(r) for r in rows]
+
+    async def sum_parcel_area_in_hectare(self, ids: list[int]) -> float:
+        """Return the cumulative area (in hectares) of the given LandParcels.
+
+        Ekylibre stores parcel shapes in EPSG:4326 (geographic lat/lon).
+        Casting to `geography` lets PostGIS compute spheroidal WGS84
+        area in m² directly — no `ST_Transform` to a projected CRS, so
+        the same query works for tenants in France, the Sahel, or any
+        other region without us having to pick a region-specific CRS.
+        Parcels without a shape contribute 0; the caller decides
+        whether to fall back to a different strategy.
+        """
+        if not ids:
+            return 0.0
+        row = await self._conn.fetchrow(
+            "SELECT COALESCE("
+            "  SUM(ST_Area(initial_shape::geography) / 10000.0), "
+            "  0"
+            ") AS hectares "
+            "FROM products "
+            "WHERE id = ANY($1::int[]) AND initial_shape IS NOT NULL",
+            ids,
+        )
+        return float(row["hectares"]) if row else 0.0
+
+    async def list_input_products(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Products usable as intervention inputs (intrants).
+
+        Filters to consumable types: `Matter` (chemicals, fertilizers,
+        treatments, …) and `Plant` (seeds, plantings). Excludes tools,
+        workers, buildings and land parcels — those are surfaced via the
+        relevant param, not the inputs slot.
+        """
+        rows = await self._conn.fetch(
+            "SELECT id, name, type FROM products "
+            "WHERE dead_at IS NULL "
+            "AND type IN ('Matter', 'Plant') "
             "ORDER BY name LIMIT $1",
             limit,
         )

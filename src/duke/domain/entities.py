@@ -47,3 +47,11 @@ class Ambiguity(_Strict):
     raw_value: str
     options: list[str] = Field(default_factory=list)
     question: str
+    # Tells the widget to render a multi-select (checkbox list) and accept a
+    # comma-separated answer. Used for the catch-all "no targets at all" case
+    # where any parcel is fair game; per-raw-target ambiguities stay single.
+    multi: bool = False
+    # Subset of `options` to render as already ticked. For targets, this is
+    # the names of parcels that were resolved upstream — the user can untick
+    # to remove them, or pick more.
+    selected: list[str] = Field(default_factory=list)

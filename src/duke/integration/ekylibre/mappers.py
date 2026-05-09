@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -33,6 +34,70 @@ _DEFAULT_TARGET_REFERENCE = "land_parcel"
 _DEFAULT_INPUT_REFERENCE = "plant_medicine"
 _DEFAULT_TOOL_REFERENCE = "tool"
 _DEFAULT_DOER_REFERENCE = "doer"
+
+
+# Density-style quantity handlers as declared by the Procedo XML files in
+# `config/procedures/*.xml`. Each canonical unit name maps to the matching
+# `quantity_handler` (Ekylibre infers the unit from procedure XML based on
+# the handler, but we still pass the unit name through for transparency).
+_DENSITY_HANDLERS: dict[str, tuple[str, str]] = {
+    "liter_per_hectare":      ("volume_area_density", "liter_per_hectare"),
+    "hectoliter_per_hectare": ("volume_area_density", "hectoliter_per_hectare"),
+    "liter_per_square_meter": ("volume_area_density", "liter_per_square_meter"),
+    "kilogram_per_hectare":   ("mass_area_density",   "kilogram_per_hectare"),
+    "gram_per_hectare":       ("mass_area_density",   "gram_per_hectare"),
+}
+
+# Casual/free-form spellings the LLM (or the user via clarify) might emit
+# for density-style units. Keys are pre-normalised (lower-case, ² → 2,
+# whitespace collapsed) so the lookup is straightforward.
+_DENSITY_UNIT_ALIASES: dict[str, str] = {
+    # liter per hectare
+    "l/ha":               "liter_per_hectare",
+    "litre/ha":           "liter_per_hectare",
+    "liter/ha":           "liter_per_hectare",
+    "l par ha":           "liter_per_hectare",
+    "l par hectare":      "liter_per_hectare",
+    "litre par hectare":  "liter_per_hectare",
+    "liter par hectare":  "liter_per_hectare",
+    # kilogram per hectare
+    "kg/ha":                  "kilogram_per_hectare",
+    "kilogramme/ha":          "kilogram_per_hectare",
+    "kg par ha":              "kilogram_per_hectare",
+    "kg par hectare":         "kilogram_per_hectare",
+    "kilogramme par hectare": "kilogram_per_hectare",
+    # gram per hectare
+    "g/ha":          "gram_per_hectare",
+    "g par ha":      "gram_per_hectare",
+    "g par hectare": "gram_per_hectare",
+    # liter per square meter
+    "l/m2":               "liter_per_square_meter",
+    "litre/m2":           "liter_per_square_meter",
+    "l par m2":           "liter_per_square_meter",
+    "l par metre carre":  "liter_per_square_meter",
+    "liter par m2":       "liter_per_square_meter",
+    # hectoliter per hectare
+    "hl/ha":                  "hectoliter_per_hectare",
+    "hectolitre/ha":          "hectoliter_per_hectare",
+    "hectolitre par hectare": "hectoliter_per_hectare",
+}
+
+
+def _normalize_input_unit(unit: str | None) -> tuple[str, str | None]:
+    """Resolve (quantity_handler, quantity_unit_name) from a user-facing unit.
+
+    Returns ``("population", unit)`` for absolute quantities (the safe
+    fallback Ekylibre always understands) and ``(density_handler, canonical
+    unit)`` when the unit is recognised as a per-area density.
+    """
+    if not unit:
+        return ("population", None)
+    key = unit.strip().lower().replace("²", "2")
+    key = re.sub(r"\s+", " ", key)
+    canonical = _DENSITY_UNIT_ALIASES.get(key, key)
+    if canonical in _DENSITY_HANDLERS:
+        return _DENSITY_HANDLERS[canonical]
+    return ("population", unit)
 
 
 class MapperError(Exception):
@@ -87,14 +152,26 @@ def intervention_draft_to_payload(
     for inp in draft.inputs:
         if inp.resolved_product_id is None:
             raise MapperError(f"input {inp.raw_name!r} has no resolved product id")
+        # Ekylibre's `IntervenitionInput` validates `quantity_population`
+        # presence — without it the API rejects the create with "Quantité
+        # population ne peut pas être vide". For absolute quantities the
+        # population equals the value (5 L → 5 units of population). For
+        # density quantities (2 L/ha, 30 kg/ha, …) we don't yet know the
+        # parcel area at mapping time, so we send `value` as the
+        # population placeholder; the Procedo `forward` formula recomputes
+        # it on save when the procedure spec exposes one.
+        handler, unit_name = _normalize_input_unit(inp.quantity_unit)
+        population = inp.quantity_value if inp.quantity_value is not None else 1
         attrs: dict[str, Any] = {
             "reference_name": input_slot,
             "product_id": inp.resolved_product_id,
+            "quantity_population": population,
+            "quantity_handler": handler,
         }
         if inp.quantity_value is not None:
             attrs["quantity_value"] = inp.quantity_value
-        if inp.quantity_unit:
-            attrs["quantity_unit_name"] = inp.quantity_unit
+        if unit_name:
+            attrs["quantity_unit_name"] = unit_name
         inputs_attrs.append(attrs)
 
     doers_attrs: list[dict[str, Any]] = [

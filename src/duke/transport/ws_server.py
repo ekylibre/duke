@@ -20,7 +20,7 @@ from duke.application.orchestrator import (
     QaStream,
     UnknownIntent,
 )
-from duke.domain.entities import Ambiguity, ResolvedTarget
+from duke.domain.entities import Ambiguity, ResolvedInput, ResolvedTarget
 from duke.domain.intervention import InterventionDraft
 from duke.integration.ekylibre.api_client import (
     EkylibreApiClient,
@@ -422,6 +422,7 @@ async def _handle_user_message(
 
     if isinstance(result, DraftReady):
         draft = await _enrich_with_parcel_options(ctx, result.draft)
+        draft = await _enrich_with_input_options(ctx, draft)
         user_messages_total.labels(outcome="draft").inc()
         await _emit_draft(websocket, ctx, msg.id, draft)
         outcome = TurnOutcome.AMBIGUITY if draft.ambiguities else TurnOutcome.OK
@@ -532,10 +533,23 @@ async def _handle_clarify(
 
     answer = msg.answer.strip()
 
-    # Option-pick fast path: see if the user clicked a parcel candidate.
+    # Option-pick fast path: see if the user clicked a parcel candidate…
     selected = await _apply_parcel_selection(ctx, existing, answer)
     if selected is not None:
+        # The parcel pick may have left input ambiguities still open; keep
+        # their options fresh (the recorder doesn't run again here).
+        selected = await _enrich_with_input_options(ctx, selected)
         await _emit_draft(websocket, ctx, msg.id, selected)
+        return
+
+    # …or a product candidate for an inputs ambiguity.
+    selected_input = await _apply_input_selection(ctx, existing, answer)
+    if selected_input is not None:
+        # Re-enrich both directions — picking one input shouldn't blow away
+        # the parcel options if the parcels ambiguity is still pending.
+        selected_input = await _enrich_with_parcel_options(ctx, selected_input)
+        selected_input = await _enrich_with_input_options(ctx, selected_input)
+        await _emit_draft(websocket, ctx, msg.id, selected_input)
         return
 
     # Free-text fallback: re-extract with the answer appended.
@@ -579,6 +593,7 @@ async def _handle_clarify(
     if existing.raw_text:
         new_draft = new_draft.model_copy(update={"raw_text": existing.raw_text})
     new_draft = await _enrich_with_parcel_options(ctx, new_draft)
+    new_draft = await _enrich_with_input_options(ctx, new_draft)
     await _emit_draft(websocket, ctx, msg.id, new_draft)
 
 
@@ -605,6 +620,17 @@ async def _emit_draft(
 
 _PARCEL_OPTION_LIMIT = 5
 _PARCEL_FUZZY_THRESHOLD = 50
+# Cap for the multi-select UI: scrollable but not overwhelming. The list is
+# capped alphabetically; tenants with many more parcels need to refine via
+# free-text in the textarea instead.
+_PARCEL_MULTI_OPTION_LIMIT = 100
+
+# Same shape as parcels — fuzzy top-N for the per-input single-select UI,
+# with a larger fallback list when the user's raw_name doesn't fuzzy-match
+# anything well enough.
+_INPUT_OPTION_LIMIT = 8
+_INPUT_FUZZY_THRESHOLD = 50
+_INPUT_FALLBACK_LIMIT = 100
 
 
 async def _load_tenant_parcels(ctx: _SessionContext) -> list[dict[str, Any]]:
@@ -631,10 +657,14 @@ async def _enrich_with_parcel_options(
 ) -> InterventionDraft:
     """Attach parcel candidates to each unresolved-target ambiguity.
 
-    Fuzzy-matches the unresolved `raw_value` against the tenant's land
-    parcels and stores the top-N names as `Ambiguity.options`. The widget
-    renders these as clickable buttons; clicking one becomes a `clarify`
-    that the option-pick fast path resolves without an LLM call.
+    For per-raw-target ambiguities (`multi=False`) we fuzzy-match the user's
+    raw value against the tenant's parcels and surface the top-N names as
+    single-select buttons.
+
+    For the catch-all multi ambiguity (`multi=True`, raised when the user
+    didn't name any parcel), the fuzzy match has nothing to bite on, so we
+    return the full alphabetical list (capped) and let the widget render a
+    checkbox list.
     """
     target_ambiguities = [a for a in draft.ambiguities if a.field == "targets"]
     if not target_ambiguities:
@@ -647,22 +677,43 @@ async def _enrich_with_parcel_options(
     from rapidfuzz import fuzz, process
 
     parcel_names = [p["name"] for p in parcels]
+    # Names of parcels already resolved on the draft — surfaced as pre-ticked
+    # checkboxes in the widget so the user doesn't accidentally drop them
+    # when answering a multi-select.
+    resolved_names = [
+        t.resolved_name
+        for t in draft.targets
+        if t.resolved_id is not None and t.resolved_name
+    ]
     enriched: list[Ambiguity] = []
     for amb in draft.ambiguities:
         if amb.field != "targets" or amb.options:
             enriched.append(amb)
             continue
-        matches = process.extract(
-            amb.raw_value or "",
-            parcel_names,
-            scorer=fuzz.WRatio,
-            limit=_PARCEL_OPTION_LIMIT,
-        )
-        options = [name for name, score, _idx in matches if score >= _PARCEL_FUZZY_THRESHOLD]
+
+        if amb.multi:
+            options = parcel_names[:_PARCEL_MULTI_OPTION_LIMIT]
+            # Make sure the pre-checked names are visible in the option set
+            # (they're always real parcel names, but the cap might exclude
+            # them if the tenant has many more).
+            for name in resolved_names:
+                if name not in options:
+                    options.append(name)
+            selected = [n for n in resolved_names if n in options]
+        else:
+            matches = process.extract(
+                amb.raw_value or "",
+                parcel_names,
+                scorer=fuzz.WRatio,
+                limit=_PARCEL_OPTION_LIMIT,
+            )
+            options = [name for name, score, _idx in matches if score >= _PARCEL_FUZZY_THRESHOLD]
+            selected = []
+
         if not options:
             enriched.append(amb)
             continue
-        enriched.append(amb.model_copy(update={"options": options}))
+        enriched.append(amb.model_copy(update={"options": options, "selected": selected}))
 
     return draft.model_copy(update={"ambiguities": enriched})
 
@@ -670,13 +721,59 @@ async def _enrich_with_parcel_options(
 async def _apply_parcel_selection(
     ctx: _SessionContext, draft: InterventionDraft, answer: str
 ) -> InterventionDraft | None:
-    """Patch a target ambiguity directly when the user picked one of the
-    suggested parcel names. Returns the updated draft, or None if no option
-    matched (caller falls back to LLM combine).
+    """Patch a target ambiguity directly when the user picked one (or several)
+    of the suggested parcel names. Returns the updated draft, or None if no
+    option matched (caller falls back to LLM combine).
+
+    Two flavours:
+    - Multi-select (`amb.multi=True`): `answer` is a comma-separated list of
+      parcel names; every one must be in the option set. We replace all
+      unresolved targets with one ResolvedTarget per pick and drop every
+      `targets` ambiguity in one shot.
+    - Single-select (per-raw-target): `answer` is one option name; we find
+      the matching unresolved target by raw_name (or take the first one)
+      and resolve it.
     """
-    candidate_names = {
-        opt for amb in draft.ambiguities if amb.field == "targets" for opt in amb.options
-    }
+    target_ambs = [a for a in draft.ambiguities if a.field == "targets"]
+    if not target_ambs:
+        return None
+
+    multi_amb = next((a for a in target_ambs if a.multi), None)
+
+    if multi_amb is not None:
+        names = [p.strip() for p in answer.split(",") if p.strip()]
+        if not names:
+            return None
+        option_set = set(multi_amb.options)
+        if not all(n in option_set for n in names):
+            return None
+
+        parcels = await _load_tenant_parcels(ctx)
+        by_name = {str(p["name"]): p for p in parcels}
+        if not all(n in by_name for n in names):
+            return None
+
+        # The user's tick list is authoritative: it covers what they want
+        # for the whole intervention (already-resolved targets are surfaced
+        # as pre-ticked checkboxes via `Ambiguity.selected`, so unticking is
+        # an explicit "remove this parcel" gesture).
+        new_targets = [
+            ResolvedTarget(
+                kind="land_parcel",
+                raw_name=name,
+                resolved_id=int(by_name[name]["id"]),
+                resolved_name=str(by_name[name]["name"]),
+                confidence=1.0,
+            )
+            for name in names
+        ]
+        new_ambiguities = [a for a in draft.ambiguities if a.field != "targets"]
+        return draft.model_copy(
+            update={"targets": new_targets, "ambiguities": new_ambiguities}
+        )
+
+    # Single-select path (existing behaviour).
+    candidate_names = {opt for amb in target_ambs for opt in amb.options}
     if answer not in candidate_names:
         return None
 
@@ -716,6 +813,197 @@ async def _apply_parcel_selection(
     return draft.model_copy(update={"targets": new_targets, "ambiguities": new_ambiguities})
 
 
+# Per-area unit → absolute unit. Lets us turn "2 L/ha on 1.5 ha" into
+# "3 L total", which the mapper records under handler="population" without
+# triggering Procedo's net_volume/net_mass division (which fails on any
+# product without those indicators set, e.g. mixtures like bouillie
+# bordelaise).
+_DENSITY_TO_ABSOLUTE_UNIT: dict[str, str] = {
+    "liter_per_hectare":      "liter",
+    "hectoliter_per_hectare": "hectoliter",
+    "liter_per_square_meter": "liter",
+    "kilogram_per_hectare":   "kilogram",
+    "gram_per_hectare":       "gram",
+}
+
+
+async def _sum_parcel_area_ha(ctx: _SessionContext, ids: list[int]) -> float:
+    """Cumulative LandParcel area in hectares for the given product ids."""
+    if ctx.read_db is None or not ids:
+        return 0.0
+    try:
+        async with ctx.read_db.with_tenant(ctx.creds.tenant) as reader:
+            return await reader.sum_parcel_area_in_hectare(ids)
+    except Exception as exc:
+        log.warning(
+            "ws.parcel_area_lookup_failed",
+            session_id=ctx.ws_session_id,
+            error=str(exc),
+        )
+        return 0.0
+
+
+async def _convert_density_inputs_to_absolute(
+    ctx: _SessionContext, draft: InterventionDraft
+) -> InterventionDraft:
+    """Rewrite per-area inputs (2 L/ha) into absolute totals (rate × area)."""
+    has_density = any(
+        (inp.quantity_unit or "") in _DENSITY_TO_ABSOLUTE_UNIT
+        for inp in draft.inputs
+    )
+    if not has_density:
+        return draft
+
+    target_ids = [t.resolved_id for t in draft.targets if t.resolved_id is not None]
+    total_area_ha = await _sum_parcel_area_ha(ctx, target_ids)
+    # `liter_per_square_meter` rates apply to surfaces sized in m², not ha.
+    total_area_m2 = total_area_ha * 10_000
+
+    new_inputs: list[ResolvedInput] = []
+    for inp in draft.inputs:
+        density_unit = inp.quantity_unit or ""
+        if density_unit not in _DENSITY_TO_ABSOLUTE_UNIT or inp.quantity_value is None:
+            new_inputs.append(inp)
+            continue
+        # Rate × area — pick the right area unit per density.
+        if density_unit == "liter_per_square_meter":
+            total = inp.quantity_value * total_area_m2
+        else:
+            total = inp.quantity_value * total_area_ha
+        if total_area_ha == 0:
+            # No usable shape on the targets — keep the rate as-is and let
+            # the mapper send it along; Ekylibre will surface the error
+            # rather than silently record a zero quantity.
+            new_inputs.append(inp)
+            continue
+        new_inputs.append(
+            inp.model_copy(
+                update={
+                    "quantity_value": round(float(total), 4),
+                    "quantity_unit": _DENSITY_TO_ABSOLUTE_UNIT[density_unit],
+                }
+            )
+        )
+
+    return draft.model_copy(update={"inputs": new_inputs})
+
+
+async def _load_tenant_input_products(ctx: _SessionContext) -> list[dict[str, Any]]:
+    """Best-effort lookup of consumable products (intrants) for the tenant.
+
+    Same contract as `_load_tenant_parcels`: returns [] on any failure so
+    the caller falls back to the LLM clarify path.
+    """
+    if ctx.read_db is None:
+        return []
+    try:
+        async with ctx.read_db.with_tenant(ctx.creds.tenant) as reader:
+            return await reader.list_input_products(limit=_INPUT_FALLBACK_LIMIT)
+    except Exception as exc:
+        log.warning(
+            "ws.input_lookup_failed", session_id=ctx.ws_session_id, error=str(exc)
+        )
+        return []
+
+
+async def _enrich_with_input_options(
+    ctx: _SessionContext, draft: InterventionDraft
+) -> InterventionDraft:
+    """Attach product candidates to each unresolved-input ambiguity.
+
+    Fuzzy-matches the input's raw_name against the tenant's `Matter` and
+    `Plant` products. When no fuzzy match clears the threshold we still
+    surface the (capped) full list so the user can pick something — the
+    confirm step would otherwise crash on `resolved_product_id is None`.
+    """
+    input_ambiguities = [a for a in draft.ambiguities if a.field == "inputs"]
+    if not input_ambiguities:
+        return draft
+
+    products = await _load_tenant_input_products(ctx)
+    if not products:
+        return draft
+
+    from rapidfuzz import fuzz, process
+
+    product_names = [str(p["name"]) for p in products]
+    enriched: list[Ambiguity] = []
+    for amb in draft.ambiguities:
+        if amb.field != "inputs" or amb.options:
+            enriched.append(amb)
+            continue
+        matches = process.extract(
+            amb.raw_value or "",
+            product_names,
+            scorer=fuzz.WRatio,
+            limit=_INPUT_OPTION_LIMIT,
+        )
+        options = [name for name, score, _idx in matches if score >= _INPUT_FUZZY_THRESHOLD]
+        if not options:
+            options = product_names[:_INPUT_FALLBACK_LIMIT]
+        if not options:
+            enriched.append(amb)
+            continue
+        enriched.append(amb.model_copy(update={"options": options}))
+
+    return draft.model_copy(update={"ambiguities": enriched})
+
+
+async def _apply_input_selection(
+    ctx: _SessionContext, draft: InterventionDraft, answer: str
+) -> InterventionDraft | None:
+    """Resolve the first unresolved input whose ambiguity exposes `answer`
+    as one of its options. Returns None if no match — the LLM clarify path
+    takes over.
+    """
+    input_ambs = [a for a in draft.ambiguities if a.field == "inputs"]
+    if not input_ambs:
+        return None
+
+    matching_ambs = [a for a in input_ambs if answer in a.options]
+    if not matching_ambs:
+        return None
+    target_amb = matching_ambs[0]
+
+    products = await _load_tenant_input_products(ctx)
+    matching = [p for p in products if str(p["name"]) == answer]
+    if len(matching) != 1:
+        return None
+    chosen = matching[0]
+
+    new_inputs: list[ResolvedInput] = []
+    consumed_raw: str | None = None
+    for inp in draft.inputs:
+        if (
+            inp.resolved_product_id is None
+            and inp.raw_name == target_amb.raw_value
+            and consumed_raw is None
+        ):
+            new_inputs.append(
+                ResolvedInput(
+                    raw_name=inp.raw_name,
+                    resolved_product_id=int(chosen["id"]),
+                    resolved_product_name=str(chosen["name"]),
+                    quantity_value=inp.quantity_value,
+                    quantity_unit=inp.quantity_unit,
+                    confidence=1.0,
+                )
+            )
+            consumed_raw = inp.raw_name
+        else:
+            new_inputs.append(inp)
+
+    if consumed_raw is None:
+        return None
+
+    new_ambiguities = [
+        a
+        for a in draft.ambiguities
+        if not (a.field == "inputs" and a.raw_value == consumed_raw)
+    ]
+    return draft.model_copy(update={"inputs": new_inputs, "ambiguities": new_ambiguities})
+
+
 async def _handle_confirm(
     websocket: WebSocket,
     ctx: _SessionContext,
@@ -742,6 +1030,14 @@ async def _handle_confirm(
     server_draft = ctx.drafts.get(msg.id)
     if server_draft and server_draft.raw_text and not draft.raw_text:
         draft = draft.model_copy(update={"raw_text": server_draft.raw_text})
+
+    # Convert per-area inputs ("2 L/ha") to absolute totals here, before
+    # the mapper runs. Procedo's density `forward` formulas divide by
+    # `PRODUCT.net_volume(liter)` (or `net_mass(kilogram)`) and explode on
+    # products without those readings — common for fertilisers / mixtures
+    # like "bouillie bordelaise". Absolute totals + handler="population"
+    # bypass the formula path entirely.
+    draft = await _convert_density_inputs_to_absolute(ctx, draft)
 
     procedure_spec = None
     if ctx.procedure_registry and draft.procedure_name:

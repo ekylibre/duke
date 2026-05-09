@@ -63,7 +63,16 @@ EXTRACT_INTERVENTION_SCHEMA: dict = {
                     "quantity_value": {"type": ["number", "null"]},
                     "quantity_unit": {
                         "type": ["string", "null"],
-                        "description": "Unit name in snake_case (e.g. 'liter', 'kilogram').",
+                        "description": (
+                            "Unit name in snake_case. "
+                            "Absolute quantities: 'liter', 'kilogram', 'gram', 'unit'. "
+                            "Density quantities (when the user says 'X/ha', 'X par hectare', "
+                            "'X par m²' or similar) MUST use the per-area form: "
+                            "'liter_per_hectare', 'kilogram_per_hectare', "
+                            "'liter_per_square_meter', 'hectoliter_per_hectare'. "
+                            "Examples: '2 L/ha' → quantity_value=2, quantity_unit='liter_per_hectare'; "
+                            "'5 L' → quantity_value=5, quantity_unit='liter'."
+                        ),
                     },
                 },
                 "required": ["raw_name"],

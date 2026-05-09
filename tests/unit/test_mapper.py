@@ -123,10 +123,69 @@ def test_collections_use_array_form() -> None:
         {
             "reference_name": "plant_medicine",
             "product_id": 1234,
+            "quantity_population": 2.0,
+            "quantity_handler": "population",
             "quantity_value": 2.0,
             "quantity_unit_name": "liter",
         }
     ]
+
+
+def test_density_unit_picks_volume_area_density_handler() -> None:
+    """When the user types '2 L/ha' (or any per-area form the LLM normalises
+    to `liter_per_hectare`), the mapper switches the input handler to
+    `volume_area_density` so Procedo's spraying/fertilizing procedures can
+    convert the rate against the parcel area at save time."""
+    draft = _full_draft().model_copy(
+        update={
+            "inputs": [
+                ResolvedInput(
+                    raw_name="bouillie bordelaise",
+                    resolved_product_id=999,
+                    resolved_product_name="Bouillie bordelaise",
+                    quantity_value=2.0,
+                    quantity_unit="liter_per_hectare",
+                )
+            ]
+        }
+    )
+    payload = intervention_draft_to_payload(draft)
+    assert payload["inputs_attributes"] == [
+        {
+            "reference_name": "plant_medicine",
+            "product_id": 999,
+            "quantity_population": 2.0,
+            "quantity_handler": "volume_area_density",
+            "quantity_value": 2.0,
+            "quantity_unit_name": "liter_per_hectare",
+        }
+    ]
+
+
+def test_density_unit_aliases_are_normalised() -> None:
+    """Casual spellings ('L/ha', 'kg par hectare', 'L par m²', …) resolve
+    to the canonical Ekylibre unit name and the matching handler. Lets the
+    LLM (and free-text clarify replies) emit whichever form the user used
+    without each downstream consumer re-implementing the lookup."""
+    cases = [
+        ("L/ha",                ("volume_area_density", "liter_per_hectare")),
+        ("kg par hectare",      ("mass_area_density",   "kilogram_per_hectare")),
+        ("L par m²",            ("volume_area_density", "liter_per_square_meter")),
+        ("hL/ha",               ("volume_area_density", "hectoliter_per_hectare")),
+        ("liter",               ("population",          "liter")),  # absolute, no density
+    ]
+    for raw_unit, (expected_handler, expected_unit) in cases:
+        draft = _full_draft().model_copy(
+            update={
+                "inputs": [
+                    _full_draft().inputs[0].model_copy(update={"quantity_unit": raw_unit})
+                ]
+            }
+        )
+        payload = intervention_draft_to_payload(draft)
+        attrs = payload["inputs_attributes"][0]
+        assert attrs["quantity_handler"] == expected_handler, (raw_unit, attrs)
+        assert attrs["quantity_unit_name"] == expected_unit, (raw_unit, attrs)
 
 
 def test_empty_collections_are_omitted() -> None:
