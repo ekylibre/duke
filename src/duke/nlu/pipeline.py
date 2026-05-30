@@ -9,7 +9,7 @@ can recognize products / procedures / parcels by name.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import spacy
 import structlog
@@ -22,6 +22,8 @@ from duke.nlu.entity_ruler import (
     LABEL_PARCEL,
     LABEL_PRODUCT,
     LABEL_QUANTITY,
+    LABEL_TOOL,
+    LABEL_WORKER,
     patterns_from_lexicon,
 )
 from duke.nlu.intent_classifier import classify_intent
@@ -47,6 +49,13 @@ class NluResult:
     candidate_parcels: list[CandidateMatch]
     raw_quantities: list[str]
     temporal: TemporalExtraction
+    # Equipment (DUKE_TOOL) and operators (DUKE_WORKER) tagged by the trained
+    # NER. Defaulted so existing constructors (test fakes, QA path) keep
+    # working without passing them. "avec le 533" → 533 is a tractor, not a
+    # worker; surfacing the NER label as a hint keeps the LLM from filing it
+    # under `doers`. See `_hints_from_nlu` and the `tools`/`doers` schema.
+    candidate_tools: list[CandidateMatch] = field(default_factory=list)
+    candidate_workers: list[CandidateMatch] = field(default_factory=list)
 
 
 def load_nlp(model_name_or_path: str) -> Language:
@@ -150,6 +159,8 @@ class NlpPipeline:
 
         candidate_products: list[CandidateMatch] = []
         candidate_parcels: list[CandidateMatch] = []
+        candidate_tools: list[CandidateMatch] = []
+        candidate_workers: list[CandidateMatch] = []
         raw_quantities: list[str] = []
 
         for ent in doc.ents:
@@ -166,6 +177,14 @@ class NlpPipeline:
                 )
             elif ent.label_ == LABEL_PARCEL:
                 candidate_parcels.append(
+                    CandidateMatch(raw_name=ent.text, resolved_name=ent.text, score=1.0)
+                )
+            elif ent.label_ == LABEL_TOOL:
+                candidate_tools.append(
+                    CandidateMatch(raw_name=ent.text, resolved_name=ent.text, score=1.0)
+                )
+            elif ent.label_ == LABEL_WORKER:
+                candidate_workers.append(
                     CandidateMatch(raw_name=ent.text, resolved_name=ent.text, score=1.0)
                 )
             elif ent.label_ == LABEL_QUANTITY:
@@ -190,6 +209,8 @@ class NlpPipeline:
             candidate_parcels=candidate_parcels,
             raw_quantities=raw_quantities,
             temporal=temporal,
+            candidate_tools=candidate_tools,
+            candidate_workers=candidate_workers,
         )
 
     def _infer_procedure_candidates(self, text: str) -> list[CandidateMatch]:

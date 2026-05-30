@@ -8,7 +8,10 @@ from typing import Any
 
 from duke.domain.intervention import InterventionDraft
 from duke.integration.ekylibre.api_client import ProcedureSpec
-from duke.integration.ekylibre.procedure_registry import parameter_name_for_role
+from duke.integration.ekylibre.procedure_registry import (
+    parameter_name_for_role,
+    select_parameter_name,
+)
 
 # Ekylibre's intervention interactor compares started_at and stopped_at
 # unconditionally (`stopped_at < started_at` is checked in Ruby), so a nil
@@ -129,8 +132,14 @@ def intervention_draft_to_payload(
     input_slot = (
         parameter_name_for_role(procedure_spec, "input") or _DEFAULT_INPUT_REFERENCE
     )
-    tool_slot = parameter_name_for_role(procedure_spec, "tool") or _DEFAULT_TOOL_REFERENCE
-    doer_slot = parameter_name_for_role(procedure_spec, "doer") or _DEFAULT_DOER_REFERENCE
+    # Default slots when the product variety doesn't match any slot's filter
+    # (or the spec is absent). Per-item routing below refines these.
+    default_tool_slot = (
+        parameter_name_for_role(procedure_spec, "tool") or _DEFAULT_TOOL_REFERENCE
+    )
+    default_doer_slot = (
+        parameter_name_for_role(procedure_spec, "doer") or _DEFAULT_DOER_REFERENCE
+    )
 
     # The intervention pipeline has two consecutive steps with conflicting
     # expectations on `*_attributes` collections:
@@ -174,13 +183,26 @@ def intervention_draft_to_payload(
             attrs["quantity_unit_name"] = unit_name
         inputs_attrs.append(attrs)
 
+    # Route each resolved tool/doer to the most specific Procedo slot its
+    # variety satisfies — a tractor goes to the `tractor` slot (filter
+    # `is motorized_vehicle`), a towed implement to `soil_tool` (`is
+    # equipment`). Falls back to the first slot of the role when the variety
+    # matches no slot filter (or no spec).
     doers_attrs: list[dict[str, Any]] = [
-        {"reference_name": doer_slot, "product_id": d.resolved_id}
+        {
+            "reference_name": select_parameter_name(procedure_spec, "doer", d.variety)
+            or default_doer_slot,
+            "product_id": d.resolved_id,
+        }
         for d in draft.doers
         if d.resolved_id is not None
     ]
     tools_attrs: list[dict[str, Any]] = [
-        {"reference_name": tool_slot, "product_id": t.resolved_id}
+        {
+            "reference_name": select_parameter_name(procedure_spec, "tool", t.variety)
+            or default_tool_slot,
+            "product_id": t.resolved_id,
+        }
         for t in draft.tools
         if t.resolved_id is not None
     ]

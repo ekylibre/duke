@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -20,7 +21,13 @@ from duke.application.orchestrator import (
     QaStream,
     UnknownIntent,
 )
-from duke.domain.entities import Ambiguity, ResolvedInput, ResolvedTarget
+from duke.domain.entities import (
+    Ambiguity,
+    ResolvedDoer,
+    ResolvedInput,
+    ResolvedTarget,
+    ResolvedTool,
+)
 from duke.domain.intervention import InterventionDraft
 from duke.integration.ekylibre.api_client import (
     EkylibreApiClient,
@@ -423,6 +430,8 @@ async def _handle_user_message(
     if isinstance(result, DraftReady):
         draft = await _enrich_with_parcel_options(ctx, result.draft)
         draft = await _enrich_with_input_options(ctx, draft)
+        draft = await _resolve_tools(ctx, draft)
+        draft = await _resolve_doers(ctx, draft)
         user_messages_total.labels(outcome="draft").inc()
         await _emit_draft(websocket, ctx, msg.id, draft)
         outcome = TurnOutcome.AMBIGUITY if draft.ambiguities else TurnOutcome.OK
@@ -539,6 +548,8 @@ async def _handle_clarify(
         # The parcel pick may have left input ambiguities still open; keep
         # their options fresh (the recorder doesn't run again here).
         selected = await _enrich_with_input_options(ctx, selected)
+        selected = await _resolve_tools(ctx, selected)
+        selected = await _resolve_doers(ctx, selected)
         await _emit_draft(websocket, ctx, msg.id, selected)
         return
 
@@ -549,6 +560,8 @@ async def _handle_clarify(
         # the parcel options if the parcels ambiguity is still pending.
         selected_input = await _enrich_with_parcel_options(ctx, selected_input)
         selected_input = await _enrich_with_input_options(ctx, selected_input)
+        selected_input = await _resolve_tools(ctx, selected_input)
+        selected_input = await _resolve_doers(ctx, selected_input)
         await _emit_draft(websocket, ctx, msg.id, selected_input)
         return
 
@@ -594,6 +607,8 @@ async def _handle_clarify(
         new_draft = new_draft.model_copy(update={"raw_text": existing.raw_text})
     new_draft = await _enrich_with_parcel_options(ctx, new_draft)
     new_draft = await _enrich_with_input_options(ctx, new_draft)
+    new_draft = await _resolve_tools(ctx, new_draft)
+    new_draft = await _resolve_doers(ctx, new_draft)
     await _emit_draft(websocket, ctx, msg.id, new_draft)
 
 
@@ -631,6 +646,14 @@ _PARCEL_MULTI_OPTION_LIMIT = 100
 _INPUT_OPTION_LIMIT = 8
 _INPUT_FUZZY_THRESHOLD = 50
 _INPUT_FALLBACK_LIMIT = 100
+
+# Equipment (tool) auto-resolution. Unlike parcels/inputs we don't surface a
+# pick list — a tool reference like "533" usually maps to exactly one piece of
+# equipment ("Tracteur CASE-IH 533"). We only auto-resolve when a single
+# equipment is a confident match; ambiguous/no matches stay unresolved and are
+# dropped by the mapper (same as today) rather than guessed.
+_TOOL_FUZZY_THRESHOLD = 80
+_TOOL_FALLBACK_LIMIT = 500
 
 
 async def _load_tenant_parcels(ctx: _SessionContext) -> list[dict[str, Any]]:
@@ -1002,6 +1025,173 @@ async def _apply_input_selection(
         if not (a.field == "inputs" and a.raw_value == consumed_raw)
     ]
     return draft.model_copy(update={"inputs": new_inputs, "ambiguities": new_ambiguities})
+
+
+async def _load_tenant_equipments(ctx: _SessionContext) -> list[dict[str, Any]]:
+    """Best-effort lookup of equipment products (matériel) for the tenant.
+
+    Same contract as `_load_tenant_input_products`: returns [] on any failure
+    so the caller leaves tools unresolved (the mapper then drops them).
+    """
+    if ctx.read_db is None:
+        return []
+    try:
+        async with ctx.read_db.with_tenant(ctx.creds.tenant) as reader:
+            return await reader.list_equipments(limit=_TOOL_FALLBACK_LIMIT)
+    except Exception as exc:
+        log.warning(
+            "ws.equipment_lookup_failed", session_id=ctx.ws_session_id, error=str(exc)
+        )
+        return []
+
+
+async def _load_tenant_workers(ctx: _SessionContext) -> list[dict[str, Any]]:
+    """Best-effort lookup of worker products (intervenants) for the tenant."""
+    if ctx.read_db is None:
+        return []
+    try:
+        async with ctx.read_db.with_tenant(ctx.creds.tenant) as reader:
+            return await reader.list_workers(limit=_TOOL_FALLBACK_LIMIT)
+    except Exception as exc:
+        log.warning(
+            "ws.worker_lookup_failed", session_id=ctx.ws_session_id, error=str(exc)
+        )
+        return []
+
+
+def _match_product(raw: str, products: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the single product that confidently matches `raw`, else None.
+
+    Tools/doers are auto-resolved (no pick list), so we only commit to a match
+    when it is unambiguous. Tried in order:
+      1. exact (case-insensitive) name match;
+      2. whole-word token match — the raw value appears as a token in the name
+         ("533" in "Tracteur CASE-IH 533");
+      3. fuzzy WRatio, but only if a *single* candidate clears the threshold.
+    A tie at any stage returns None — we'd rather drop it than guess (e.g. two
+    workers sharing a name stay unresolved instead of picking the wrong one).
+    """
+    raw_norm = raw.strip().lower()
+    if not raw_norm:
+        return None
+
+    exact = [p for p in products if str(p["name"]).strip().lower() == raw_norm]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        return None
+
+    token_pat = re.compile(rf"(?<!\w){re.escape(raw_norm)}(?!\w)")
+    token_hits = [p for p in products if token_pat.search(str(p["name"]).lower())]
+    if len(token_hits) == 1:
+        return token_hits[0]
+    if len(token_hits) > 1:
+        return None
+
+    from rapidfuzz import fuzz, process
+
+    names = [str(p["name"]) for p in products]
+    matches = process.extract(raw, names, scorer=fuzz.WRatio, limit=3)
+    good = [(name, score) for name, score, _idx in matches if score >= _TOOL_FUZZY_THRESHOLD]
+    if len(good) == 1:
+        return next(p for p in products if str(p["name"]) == good[0][0])
+    return None
+
+
+async def _resolve_tools(
+    ctx: _SessionContext, draft: InterventionDraft
+) -> InterventionDraft:
+    """Resolve each unresolved tool's raw_name to a tenant equipment product_id.
+
+    Without this every tool stays `resolved_id=None` and the mapper drops it,
+    so the equipment never reaches the saved Ekylibre intervention. We only
+    commit confident, unambiguous matches; anything else is left unresolved.
+    The product `variety` is carried through so the mapper can route the tool
+    to the right Procedo slot (tractor → `tractor`, plough → `soil_tool`).
+    """
+    if not any(t.resolved_id is None and t.raw_name for t in draft.tools):
+        return draft
+
+    equipments = await _load_tenant_equipments(ctx)
+    if not equipments:
+        return draft
+
+    new_tools: list[ResolvedTool] = []
+    for tool in draft.tools:
+        if tool.resolved_id is not None or not tool.raw_name:
+            new_tools.append(tool)
+            continue
+        chosen = _match_product(tool.raw_name, equipments)
+        if chosen is None:
+            log.info(
+                "ws.tool_unresolved", session_id=ctx.ws_session_id, raw=tool.raw_name
+            )
+            new_tools.append(tool)
+            continue
+        log.info(
+            "ws.tool_resolved",
+            session_id=ctx.ws_session_id,
+            raw=tool.raw_name,
+            resolved_id=int(chosen["id"]),
+            variety=chosen.get("variety"),
+        )
+        new_tools.append(
+            ResolvedTool(
+                raw_name=tool.raw_name,
+                resolved_id=int(chosen["id"]),
+                resolved_name=str(chosen["name"]),
+                variety=chosen.get("variety"),
+            )
+        )
+
+    return draft.model_copy(update={"tools": new_tools})
+
+
+async def _resolve_doers(
+    ctx: _SessionContext, draft: InterventionDraft
+) -> InterventionDraft:
+    """Resolve each unresolved doer's raw_name to a tenant worker product_id.
+
+    Mirror of `_resolve_tools` for the `doer` role: without resolution the
+    mapper drops the doer and the operator never reaches the saved
+    intervention. Variety ("worker") is carried for slot routing.
+    """
+    if not any(d.resolved_id is None and d.raw_name for d in draft.doers):
+        return draft
+
+    workers = await _load_tenant_workers(ctx)
+    if not workers:
+        return draft
+
+    new_doers: list[ResolvedDoer] = []
+    for doer in draft.doers:
+        if doer.resolved_id is not None or not doer.raw_name:
+            new_doers.append(doer)
+            continue
+        chosen = _match_product(doer.raw_name, workers)
+        if chosen is None:
+            log.info(
+                "ws.doer_unresolved", session_id=ctx.ws_session_id, raw=doer.raw_name
+            )
+            new_doers.append(doer)
+            continue
+        log.info(
+            "ws.doer_resolved",
+            session_id=ctx.ws_session_id,
+            raw=doer.raw_name,
+            resolved_id=int(chosen["id"]),
+            variety=chosen.get("variety"),
+        )
+        new_doers.append(
+            ResolvedDoer(
+                raw_name=doer.raw_name,
+                resolved_id=int(chosen["id"]),
+                resolved_name=str(chosen["name"]),
+                variety=chosen.get("variety"),
+            )
+        )
+
+    return draft.model_copy(update={"doers": new_doers})
 
 
 async def _handle_confirm(

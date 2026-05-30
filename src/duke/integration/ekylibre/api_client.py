@@ -81,6 +81,9 @@ class ProcedureParameter(BaseModel):
     name: str
     human_name: str | None = None
     type: str | None = None
+    # Procedo filter expression (e.g. "is motorized_vehicle and can tow(equipment)").
+    # Used to route a resolved tool/doer to the most specific matching slot.
+    filter: str | None = None
     cardinality: ProcedureCardinality | None = None
     required: bool | None = None
 

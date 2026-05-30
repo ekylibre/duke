@@ -17,6 +17,7 @@ serving with the static defaults. Subsequent requests retry on next session.
 from __future__ import annotations
 
 import asyncio
+import re
 
 import structlog
 
@@ -27,6 +28,7 @@ from duke.integration.ekylibre.lexicon_repo import (
     LexiconRepository,
     ProcedureEntry,
 )
+from duke.integration.ekylibre.varieties import variety_distance
 
 log = structlog.get_logger(__name__)
 
@@ -150,3 +152,59 @@ def parameter_name_for_role(spec: ProcedureSpec | None, role: str) -> str | None
         if param.type == role:
             return param.name
     return None
+
+
+# `is <variety>` and `can <ability>` tokens inside a Procedo filter expression.
+_IS_VARIETY_RE = re.compile(r"\bis\s+([a-z_][a-z0-9_]*)")
+_CAN_ABILITY_RE = re.compile(r"\bcan\s+[a-z_]")
+
+
+def _filter_of(param: object) -> str:
+    """Read a parameter's Procedo `filter` (a passthrough/extra field)."""
+    value = getattr(param, "filter", None)
+    if value is None and hasattr(param, "model_extra"):
+        value = (param.model_extra or {}).get("filter")
+    return value or ""
+
+
+def select_parameter_name(
+    spec: ProcedureSpec | None, role: str, variety: str | None
+) -> str | None:
+    """Pick the best slot of `role` for a product of the given `variety`.
+
+    Routes a tool/doer to the procedure parameter whose `is <variety>` clause
+    the product most specifically satisfies — so a `tractor` lands on the
+    `motorized_vehicle` slot rather than the broader `equipment` one. We score
+    only the variety clause (not the `can …` abilities, which we don't model):
+
+      1. keep slots of this role whose filter has an `is <v>` the product is a
+         descendant of (or equals);
+      2. prefer the smallest variety distance (most specific);
+      3. tie-break on the fewest `can …` clauses (most permissive — avoids
+         sending to a slot that needs an ability we can't verify, and picks the
+         plain `doer` over a `driver`/`…can drive` slot);
+      4. final tie-break: declaration order.
+
+    Returns None when no slot's variety clause matches (or `spec`/`variety` is
+    missing) — the caller then falls back to `parameter_name_for_role`.
+    """
+    if spec is None or not variety:
+        return None
+
+    best: tuple[int, int, int, str] | None = None  # (distance, abilities, order, name)
+    for order, param in enumerate(spec.parameters):
+        if param.type != role:
+            continue
+        flt = _filter_of(param)
+        varieties = _IS_VARIETY_RE.findall(flt)
+        if not varieties:
+            continue
+        distances = [d for v in varieties if (d := variety_distance(variety, v)) is not None]
+        if not distances:
+            continue
+        ability_count = len(_CAN_ABILITY_RE.findall(flt))
+        candidate = (min(distances), ability_count, order, param.name)
+        if best is None or candidate < best:
+            best = candidate
+
+    return best[3] if best is not None else None

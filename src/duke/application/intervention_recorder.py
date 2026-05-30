@@ -102,6 +102,8 @@ def _hints_from_nlu(nlu: NluResult) -> dict[str, Any]:
         "candidate_products": [asdict(c) for c in nlu.candidate_products],
         "candidate_procedures": [asdict(c) for c in nlu.candidate_procedures],
         "candidate_parcels": [asdict(c) for c in nlu.candidate_parcels],
+        "candidate_tools": [asdict(c) for c in nlu.candidate_tools],
+        "candidate_doers": [asdict(c) for c in nlu.candidate_workers],
         "raw_quantities": nlu.raw_quantities,
         "temporal": nlu.temporal.model_dump(mode="json"),
     }

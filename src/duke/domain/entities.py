@@ -33,11 +33,18 @@ class ResolvedInput(_Strict):
 class ResolvedDoer(_Strict):
     raw_name: str
     resolved_id: int | None = None
+    resolved_name: str | None = None
+    # Ekylibre variety (e.g. "worker") — drives Procedo slot routing in the mapper.
+    variety: str | None = None
 
 
 class ResolvedTool(_Strict):
     raw_name: str
     resolved_id: int | None = None
+    resolved_name: str | None = None
+    # Ekylibre variety (e.g. "tractor", "trailed_equipment") — drives Procedo
+    # slot routing in the mapper (tractor → `tractor` slot, plough → `soil_tool`).
+    variety: str | None = None
 
 
 class Ambiguity(_Strict):

@@ -80,6 +80,12 @@ EXTRACT_INTERVENTION_SCHEMA: dict = {
         },
         "doers": {
             "type": "array",
+            "description": (
+                "Human operators who carried out the work, i.e. people identified "
+                "by a name or role (e.g. 'Jean', 'l'ouvrier', 'l'équipe'). "
+                "Use `candidate_doers` from the hints as a prior. A bare number "
+                "or an equipment name is NOT a doer — it goes in `tools`."
+            ),
             "items": {
                 "type": "object",
                 "additionalProperties": False,
@@ -89,6 +95,15 @@ EXTRACT_INTERVENTION_SCHEMA: dict = {
         },
         "tools": {
             "type": "array",
+            "description": (
+                "Equipment / material used for the intervention: tractors, "
+                "implements and machines (e.g. 'charrue', 'pulvérisateur', "
+                "'tracteur'), INCLUDING bare fleet/equipment numbers such as "
+                "'533' or 'le 533' (a tractor designated by its number). "
+                "Use `candidate_tools` from the hints as a prior. When the user "
+                "says 'avec le <X>' and <X> is a number or a machine, it is a "
+                "tool, not a doer."
+            ),
             "items": {
                 "type": "object",
                 "additionalProperties": False,

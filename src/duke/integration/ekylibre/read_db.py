@@ -134,6 +134,37 @@ class ScopedReader:
         )
         return [dict(r) for r in rows]
 
+    async def list_equipments(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Products usable as intervention tools (matériel / équipement).
+
+        Filters to `Equipment` (tractors, implements, machines). These are
+        surfaced via the `tool` param, not the inputs slot. Mirrors
+        `list_input_products`'s best-effort contract.
+        """
+        rows = await self._conn.fetch(
+            "SELECT id, name, type, variety FROM products "
+            "WHERE dead_at IS NULL "
+            "AND type = 'Equipment' "
+            "ORDER BY name LIMIT $1",
+            limit,
+        )
+        return [dict(r) for r in rows]
+
+    async def list_workers(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Products usable as intervention doers (intervenants / main d'œuvre).
+
+        Filters to `Worker`. Surfaced via the `doer`/`driver` params. Mirrors
+        `list_equipments`'s best-effort contract.
+        """
+        rows = await self._conn.fetch(
+            "SELECT id, name, type, variety FROM products "
+            "WHERE dead_at IS NULL "
+            "AND type = 'Worker' "
+            "ORDER BY name LIMIT $1",
+            limit,
+        )
+        return [dict(r) for r in rows]
+
     async def list_activities(self, limit: int = 200) -> list[dict[str, Any]]:
         rows = await self._conn.fetch(
             "SELECT id, name FROM activities ORDER BY name LIMIT $1",
