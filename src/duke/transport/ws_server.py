@@ -92,6 +92,10 @@ class _SessionContext:
     procedure_registry: ProcedureRegistry | None = None
     lexicon_repo: object | None = None
     db_session_id: uuid.UUID | None = None
+    # LLM provider selected for this session (validated against the router's
+    # available providers at auth). `UserMessage.llm_provider` can override it
+    # per message. None → router uses its default.
+    llm_provider: str | None = None
     drafts: dict[str, InterventionDraft] = field(default_factory=dict)
     draft_db_ids: dict[str, uuid.UUID] = field(default_factory=dict)
 
@@ -120,9 +124,10 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     log.info("ws.connected", session_id=session_id)
 
     try:
-        creds = await _await_auth(websocket, session_id)
-        if creds is None:
+        auth = await _await_auth(websocket, session_id)
+        if auth is None:
             return
+        creds, llm_provider = auth
 
         settings = websocket.app.state.settings
         ws_sessions_active.inc()
@@ -138,6 +143,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 read_db=getattr(websocket.app.state, "read_db", None),
                 procedure_registry=getattr(websocket.app.state, "procedure_registry", None),
                 lexicon_repo=getattr(websocket.app.state, "lexicon_repo", None),
+                llm_provider=llm_provider,
             )
 
             # Lazy-hydrate the Procedo registry on first auth. Subsequent
@@ -156,7 +162,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     ctx.repo.start_session(
                         tenant_hash=tenant_hash(creds.tenant, secret=settings.hash_secret),
                         user_hash=user_hash(creds.email, secret=settings.hash_secret),
-                        llm_provider=settings.llm_default_provider,
+                        llm_provider=ctx.llm_provider or settings.llm_default_provider,
                     )
                 )
 
@@ -176,7 +182,9 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             await websocket.close(code=WS_CLOSE_INTERNAL_ERROR)
 
 
-async def _await_auth(websocket: WebSocket, session_id: str) -> EkylibreCredentials | None:
+async def _await_auth(
+    websocket: WebSocket, session_id: str
+) -> tuple[EkylibreCredentials, str | None] | None:
     try:
         raw = await asyncio.wait_for(websocket.receive_json(), timeout=AUTH_TIMEOUT_S)
     except TimeoutError:
@@ -259,17 +267,33 @@ async def _await_auth(websocket: WebSocket, session_id: str) -> EkylibreCredenti
         base_url=settings.ekylibre_api_base_url,
     )
 
+    # Resolve the session's LLM provider: honour the client's request only if
+    # the router actually has it; otherwise fall back to the default.
+    router = getattr(websocket.app.state, "llm_router", None)
+    available = router.available() if router is not None else []
+    selected = msg.llm_provider if msg.llm_provider in available else None
+    if msg.llm_provider and selected is None:
+        log.info(
+            "ws.llm_provider_unavailable",
+            session_id=session_id,
+            requested=msg.llm_provider,
+            available=available,
+        )
+    if selected is None and router is not None:
+        selected = router.default_provider
+
     await _send(
         websocket,
         AuthOkMessage(
             user={"id": user.id, "email": user.email, "full_name": user.full_name},
             tenant_label=msg.tenant,
             capabilities=["intervention_record", "qa_read"],
-            llm_provider=None,
+            llm_provider=selected,
+            available_providers=available,
         ),
     )
-    log.info("ws.auth_ok", session_id=session_id, tenant=msg.tenant)
-    return creds
+    log.info("ws.auth_ok", session_id=session_id, tenant=msg.tenant, llm_provider=selected)
+    return creds, selected
 
 
 async def _run_session(websocket: WebSocket, ctx: _SessionContext) -> None:
@@ -392,8 +416,11 @@ async def _handle_user_message(
             )
         )
 
+    provider = msg.llm_provider or ctx.llm_provider
     try:
-        result = await ctx.orchestrator.handle(msg.text, tenant_schema=ctx.creds.tenant)
+        result = await ctx.orchestrator.handle(
+            msg.text, tenant_schema=ctx.creds.tenant, provider=provider
+        )
     except LLMUnavailableError as exc:
         log.warning("ws.llm_unavailable", session_id=ctx.ws_session_id, error=str(exc))
         errors_total.labels(code=ErrorCode.LLM_UNAVAILABLE.value).inc()
@@ -572,7 +599,7 @@ async def _handle_clarify(
     await _send(websocket, ThinkingMessage(id=msg.id))
 
     try:
-        new_draft = await ctx.recorder.draft_from_text(combined)
+        new_draft = await ctx.recorder.draft_from_text(combined, provider=ctx.llm_provider)
     except LLMUnavailableError as exc:
         log.warning("ws.clarify_llm_unavailable", session_id=ctx.ws_session_id, error=str(exc))
         errors_total.labels(code=ErrorCode.LLM_UNAVAILABLE.value).inc()

@@ -72,11 +72,15 @@ class _FakeReadDb:
 class _StreamingLLM:
     name = "fake-claude-stream"
 
-    async def answer_query(self, question: str, evidence: dict[str, Any]) -> AsyncIterator[str]:
+    async def answer_query(
+        self, question: str, evidence: dict[str, Any], provider: str | None = None
+    ) -> AsyncIterator[str]:
         for chunk in ["Il te reste ", "18,5 L ", "de Karaté Zeon ", "(maj 2026-05-06)."]:
             yield chunk
 
-    async def extract_intervention(self, text: str, hints: dict[str, Any]) -> dict[str, Any]:
+    async def extract_intervention(
+        self, text: str, hints: dict[str, Any], provider: str | None = None
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
 

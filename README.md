@@ -12,7 +12,7 @@ MVP delivered through iteration 8 (saisie d'intervention + Q&A + voix + clarify)
 |---|---|
 | Foundations | FastAPI + WS transport, Alembic migrations, structured logs, Prometheus metrics, multi-tenant Postgres isolation primitive (`SET LOCAL search_path` + readonly tx) |
 | NLU | spaCy pipeline (Duke-trained NER baked at `/app/models/duke-ner` with auto-detection, fallback to `fr_core_news_lg` then blank-fr), French temporal parser, `EntityRuler` from lexicon, rule-based intent classifier, golden corpus + accuracy gate |
-| LLM | `LLMRouter` Claude + Mistral with automatic fallback, streaming for Q&A, function-calling for intervention extraction, prompt caching |
+| LLM | `LLMRouter` registry — Claude + Mistral + optional local Ollama, user-selectable per session with automatic fallback, streaming for Q&A, function-calling / structured outputs for intervention extraction, prompt caching |
 | Use cases | `InterventionRecorder` (POST /api/v2/interventions), `QueryAnswerer` (qa_stock + qa_history via Postgres direct read) |
 | Persistence | `conversation_session` / `conversation_turn` / `intervention_draft` / `audit_event` in Duke's own DB, RGPD retention job, hashed tenant/user identifiers |
 | Hardening | Per-session sliding-window rate limiter, best-effort persistence (Duke DB outages don't block users) |
@@ -46,6 +46,22 @@ distinct toggles (image content vs. feature flag):
 INSTALL_STT=true docker compose -f docker/docker-compose.yml build duke-api
 docker compose -f docker/docker-compose.yml up -d
 ```
+
+To run a **local LLM via Ollama** (a 3rd user-selectable provider next to
+Claude and Mistral), set `OLLAMA_BASE_URL=http://ollama:11434` in `.env` and
+bring up the `local-llm` profile — the `ollama-pull` sidecar fetches
+`OLLAMA_MODEL` (default `mistral-nemo`) on first start:
+
+```bash
+docker compose -f docker/docker-compose.yml --profile local-llm up -d
+```
+
+The user switches provider from the widget's model dropdown; the choice
+rides on the `auth`/`user_message` WS frames. `mistral-nemo` (~12B) is slow
+on CPU — uncomment the `deploy.resources` GPU block in the compose file if a
+GPU is available. Ollama is optional: without `OLLAMA_BASE_URL` the provider
+is simply not offered, and if it's down the router falls back to the default
+chain.
 
 Model weights (~150 MB for `small`) download on first transcription and
 persist in the `whisper-cache` named volume mounted at

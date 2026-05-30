@@ -71,8 +71,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     pipeline.install_entity_ruler()
 
-    primary, secondary = _build_llm_providers(settings)
-    llm_router = LLMRouter(primary=primary, secondary=secondary)
+    providers, default_order = _build_llm_providers(settings)
+    llm_router = LLMRouter(providers=providers, default_order=default_order)
     recorder = InterventionRecorder(pipeline=pipeline, llm=llm_router)
 
     read_db = EkylibreReadDb(ekylibre_pool)
@@ -114,8 +114,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     log.info(
         "startup.ready",
-        llm_primary=primary.name,
-        llm_secondary=secondary.name if secondary else None,
+        llm_default=llm_router.default_provider,
+        llm_available=llm_router.available(),
     )
 
     try:
@@ -138,39 +138,55 @@ async def _run_migrations(duke_db_dsn: str) -> None:
     command.upgrade(cfg, "head")
 
 
-def _build_llm_providers(settings: Settings) -> tuple[LLMProvider, LLMProvider | None]:
+def _build_llm_providers(
+    settings: Settings,
+) -> tuple[dict[str, LLMProvider], list[str]]:
+    """Build the configured LLM providers and the default fallback order.
+
+    A provider is included only when its credentials/endpoint are present
+    (API key for Claude/Mistral, base URL for Ollama). The returned order puts
+    `settings.llm_default_provider` first, then the rest, so the router falls
+    back through every configured provider.
+    """
     from duke.nlu.llm.claude import ClaudeProvider
     from duke.nlu.llm.mistral import MistralProvider
+    from duke.nlu.llm.ollama import OllamaProvider
 
-    def _claude() -> LLMProvider | None:
-        if not settings.anthropic_api_key:
-            return None
-        return ClaudeProvider.from_api_key(
+    providers: dict[str, LLMProvider] = {}
+
+    if settings.anthropic_api_key:
+        providers["claude"] = ClaudeProvider.from_api_key(
             settings.anthropic_api_key,
             model=settings.claude_model,
             max_tokens=settings.llm_max_tokens_out,
         )
-
-    def _mistral() -> LLMProvider | None:
-        if not settings.mistral_api_key:
-            return None
-        return MistralProvider.from_api_key(
+    if settings.mistral_api_key:
+        providers["mistral"] = MistralProvider.from_api_key(
             settings.mistral_api_key,
             model=settings.mistral_model,
             max_tokens=settings.llm_max_tokens_out,
         )
+    if settings.ollama_base_url:
+        providers["ollama"] = OllamaProvider.from_config(
+            settings.ollama_base_url,
+            model=settings.ollama_model,
+            max_tokens=settings.llm_max_tokens_out,
+        )
 
-    if settings.llm_default_provider == "mistral":
-        primary = _mistral() or _claude()
-        secondary = _claude() if primary and primary.name == "mistral" else None
-    else:
-        primary = _claude() or _mistral()
-        secondary = _mistral() if primary and primary.name == "claude" else None
-
-    if primary is None:
+    if not providers:
         log.warning("llm.no_provider_configured")
-        primary = _NullLLMProvider()
-    return primary, secondary
+        providers["null"] = _NullLLMProvider()
+        return providers, ["null"]
+
+    # Default first, then the remaining configured providers in a stable order.
+    default = settings.llm_default_provider
+    order = [default] if default in providers else []
+    order += [
+        name
+        for name in ("claude", "mistral", "ollama")
+        if name in providers and name not in order
+    ]
+    return providers, order
 
 
 class _NullLLMProvider:
@@ -180,8 +196,15 @@ class _NullLLMProvider:
         from duke.nlu.llm.base import LLMUnavailableError
 
         raise LLMUnavailableError(
-            "no LLM provider configured (set ANTHROPIC_API_KEY or MISTRAL_API_KEY)"
+            "no LLM provider configured "
+            "(set ANTHROPIC_API_KEY, MISTRAL_API_KEY or OLLAMA_BASE_URL)"
         )
+
+    async def answer_query(self, question: str, evidence: dict):
+        from duke.nlu.llm.base import LLMUnavailableError
+
+        raise LLMUnavailableError("no LLM provider configured")
+        yield ""  # pragma: no cover — makes this an async generator
 
     async def health(self) -> bool:
         return False

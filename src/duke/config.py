@@ -35,11 +35,18 @@ class Settings(BaseSettings):
     session_idle_timeout_s: int = 1800
     rate_limit_per_min: int = 30
 
+    # Default provider when the client doesn't pick one. Also the head of the
+    # fallback chain. One of "claude" | "mistral" | "ollama".
     llm_default_provider: str = "claude"
     anthropic_api_key: str | None = None
     claude_model: str = "claude-opus-4-7"
     mistral_api_key: str | None = None
     mistral_model: str = "mistral-large-latest"
+    # Local Ollama provider (opt-in). `ollama_base_url` empty/None disables it.
+    # The model must be pulled in the Ollama server (see docker compose
+    # `local-llm` profile + the `ollama-pull` sidecar).
+    ollama_base_url: str | None = None
+    ollama_model: str = "mistral-nemo"
     llm_max_tokens_out: int = 1024
     llm_budget_tokens_per_session: int = 50000
 

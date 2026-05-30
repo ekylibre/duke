@@ -30,12 +30,18 @@ class AuthMessage(_StrictModel):
     token: str
     tenant: str
     locale: str = "fr"
+    # Preferred LLM provider for the session ("claude" | "mistral" | "ollama").
+    # Validated against the server's configured providers; falls back to the
+    # default when null/unknown.
+    llm_provider: str | None = None
 
 
 class UserMessage(_StrictModel):
     type: Literal["user_message"] = "user_message"
     id: str
     text: str
+    # Optional per-message override of the session's LLM provider.
+    llm_provider: str | None = None
 
 
 class ConfirmInterventionMessage(_StrictModel):
@@ -79,7 +85,10 @@ class AuthOkMessage(_StrictModel):
     user: dict[str, Any]
     tenant_label: str
     capabilities: list[str] = Field(default_factory=list)
+    # `llm_provider` = the provider selected for this session. `available_providers`
+    # = everything the server has configured, so the widget can render a picker.
     llm_provider: str | None = None
+    available_providers: list[str] = Field(default_factory=list)
 
 
 class AuthErrorMessage(_StrictModel):

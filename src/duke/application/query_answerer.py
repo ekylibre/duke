@@ -47,6 +47,7 @@ class QueryAnswerer:
         self,
         question: str,
         tenant_schema: str,
+        provider: str | None = None,
     ) -> AsyncIterator[str]:
         nlu = self._pipeline.analyze(question)
         intent = nlu.intent.intent
@@ -62,7 +63,7 @@ class QueryAnswerer:
             yield EMPTY_EVIDENCE_MESSAGE
             return
 
-        async for token in self._llm.answer_query(question, evidence):
+        async for token in self._llm.answer_query(question, evidence, provider=provider):
             yield token
 
     async def _evidence_stock(self, question: str, tenant_schema: str) -> dict[str, Any]:

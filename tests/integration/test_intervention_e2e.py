@@ -68,7 +68,7 @@ class _FakeLLMRouter:
     primary_name = "fake-claude"
 
     async def extract_intervention(
-        self, text: str, hints: dict[str, Any]
+        self, text: str, hints: dict[str, Any], provider: str | None = None
     ) -> tuple[dict[str, Any], str]:
         return (
             {
@@ -247,7 +247,7 @@ class _AmbiguousThenResolvingLLM:
     primary_name = "fake-claude"
 
     async def extract_intervention(
-        self, text: str, hints: dict[str, Any]
+        self, text: str, hints: dict[str, Any], provider: str | None = None
     ) -> tuple[dict[str, Any], str]:
         clarified = "Précision" in text  # Duke appends "Précision : <answer>" on clarify
         target = {
@@ -409,7 +409,7 @@ def test_parcel_options_are_picked_directly_without_llm(
         primary_name = "fake-claude"
 
         async def extract_intervention(
-            self, text: str, hints: dict[str, Any]
+            self, text: str, hints: dict[str, Any], provider: str | None = None
         ) -> tuple[dict[str, Any], str]:
             llm_calls.append(text)
             return (
@@ -524,7 +524,7 @@ async def test_recorder_canonicalizes_procedure_name_via_lexicon() -> None:
         primary_name = "fake-claude"
 
         async def extract_intervention(
-            self, text: str, hints: dict[str, Any]
+            self, text: str, hints: dict[str, Any], provider: str | None = None
         ) -> tuple[dict[str, Any], str]:
             return (
                 {

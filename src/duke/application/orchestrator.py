@@ -54,16 +54,17 @@ class ConversationOrchestrator:
         text: str,
         tenant_schema: str,
         parcel_names: list[str] | None = None,
+        provider: str | None = None,
     ) -> OrchestratorResult:
         intent = classify_intent(text).intent
         log.info("orchestrator.routed", intent=intent.value)
 
         if intent == Intent.RECORD_INTERVENTION:
-            draft = await self._recorder.draft_from_text(text, parcel_names)
+            draft = await self._recorder.draft_from_text(text, parcel_names, provider=provider)
             return DraftReady(draft=draft)
 
         if intent in (Intent.QA_STOCK, Intent.QA_HISTORY):
-            stream = self._query_answerer.answer_stream(text, tenant_schema)
+            stream = self._query_answerer.answer_stream(text, tenant_schema, provider=provider)
             return QaStream(stream=stream)
 
         if intent == Intent.OUT_OF_SCOPE:

@@ -19,9 +19,15 @@ via `duke_reader`). MVP scope is in `REQUIREMENTS.md`; full design in
   test deps; `uv sync --extra stt` to add the Whisper backend.
 - **FastAPI + Starlette WS** for transport, **SQLAlchemy 2 async** +
   Alembic for Duke's own DB, **asyncpg** for the read-only Ekylibre DB.
-- **spaCy + LLMRouter** (Claude/Mistral) hybrid NLU. spaCy extracts cheap
-  candidates; LLM handles ambiguity + structured extraction via tool use.
+- **spaCy + LLMRouter** (Claude/Mistral/Ollama) hybrid NLU. spaCy extracts
+  cheap candidates; LLM handles ambiguity + structured extraction via tool use.
+  `LLMRouter` is a provider registry: the user picks a provider per session
+  (`llm_provider` on the `auth`/`user_message` WS frames); unknown/down →
+  fallback to the default chain (`LLM_DEFAULT_PROVIDER` first).
 - **faster-whisper** (CTranslate2) for the opt-in server STT fallback.
+- **Ollama** (opt-in local LLM) behind the compose `local-llm` profile;
+  enabled when `OLLAMA_BASE_URL` is set. Uses structured outputs
+  (`format=<schema>`) for extraction, NDJSON streaming for Q&A.
 
 ## Common commands
 

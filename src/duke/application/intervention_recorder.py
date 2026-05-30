@@ -37,13 +37,18 @@ class InterventionRecorder:
         self._llm = llm
 
     async def draft_from_text(
-        self, text: str, parcel_names: list[str] | None = None
+        self,
+        text: str,
+        parcel_names: list[str] | None = None,
+        provider: str | None = None,
     ) -> InterventionDraft:
         nlu = self._pipeline.analyze(text, parcel_names=parcel_names or [])
         hints = _hints_from_nlu(nlu)
 
         try:
-            raw, provider = await self._llm.extract_intervention(text, hints)
+            raw, provider = await self._llm.extract_intervention(
+                text, hints, provider=provider
+            )
             log.info("intervention.extracted", provider=provider)
         except LLMSchemaError as exc:
             log.warning("intervention.llm_schema_error", error=str(exc))

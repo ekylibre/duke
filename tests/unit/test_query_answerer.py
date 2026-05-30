@@ -64,7 +64,9 @@ class _FakeLLM:
         self._tokens = tokens
         self.last_evidence: dict[str, Any] | None = None
 
-    async def answer_query(self, question: str, evidence: dict[str, Any]) -> AsyncIterator[str]:
+    async def answer_query(
+        self, question: str, evidence: dict[str, Any], provider: str | None = None
+    ) -> AsyncIterator[str]:
         self.last_evidence = evidence
         for token in self._tokens:
             yield token
